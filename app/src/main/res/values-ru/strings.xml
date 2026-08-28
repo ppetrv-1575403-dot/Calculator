@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Калькулятор</string>
+
+    <!-- Calculator -->
+    <string name="calc_error">Ошибка</string>
+    <string name="calc_hint_long_press">Удерживайте = для открытия хранилища</string>
+    <string name="calc_invalid_pin">Неверный PIN</string>
+
+    <!-- Setup PIN -->
+    <string name="setup_title">Установите секретный PIN</string>
+    <string name="setup_description">Введите PIN в калькуляторе и удерживайте «=», чтобы открыть хранилище.</string>
+    <string name="setup_pin_label">PIN-код</string>
+    <string name="setup_confirm_label">Подтвердите PIN</string>
+    <string name="setup_save">Сохранить</string>
+    <string name="setup_error_min_length">Минимум 4 цифры</string>
+    <string name="setup_error_mismatch">PIN-коды не совпадают</string>
+
+    <!-- Vault -->
+    <string name="vault_title">Хранилище</string>
+    <string name="vault_close">Закрыть</string>
+    <string name="vault_add_file">Добавить файл</string>
+    <string name="vault_empty">Хранилище пусто</string>
+    <string name="vault_preview_unsupported">Просмотр этого типа файлов не поддерживается в MVP.</string>
+
+    <!-- Overlay -->
+    <string name="overlay_close_button_desc">Закрыть приложение</string>
+    <string name="overlay_permission_title">Требуется разрешение</string>
+    <string name="overlay_permission_message">Разрешите отображение поверх других окон, чтобы кнопка быстрого закрытия работала.</string>
+    <string name="overlay_permission_open_settings">Открыть настройки</string>
+    <string name="overlay_permission_cancel">Отмена</string>
+</resources>
