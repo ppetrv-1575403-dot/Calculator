@@ -1,12 +1,14 @@
 package com.google.android.calculator.presentation.vault
 
+import android.content.Context
 import android.net.Uri
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
-import com.google.android.calculator.domain.model.VaultFile // <-- ИСПРАВЛЕННЫЙ ИМПОРТ
+import com.google.android.calculator.domain.model.VaultFile
 import com.google.android.calculator.domain.usecase.AddFileUseCase
 import com.google.android.calculator.domain.usecase.GetFilesUseCase
 import com.google.android.calculator.domain.repository.VaultRepository
@@ -21,11 +23,9 @@ class VaultViewModel(
 
     var files by mutableStateOf<List<VaultFile>>(emptyList())
         private set
-    var currentPreviewFile by mutableStateOf<VaultFile?>(null)
-        private set
-    var decryptedTempFile by mutableStateOf<File?>(null)
-        private set
-    var decryptedTextContent by mutableStateOf<String?>(null)
+
+    // Для экспорта
+    var fileToExport by mutableStateOf<VaultFile?>(null)
         private set
 
     init { loadFiles() }
@@ -41,21 +41,18 @@ class VaultViewModel(
         }
     }
 
-    fun openFile(file: VaultFile) {
+    fun deleteFile(file: VaultFile) {
         viewModelScope.launch {
-            currentPreviewFile = file
-            val temp = repository.decryptToTempFile(file.encryptedFileName)
-            decryptedTempFile = temp
-            if (temp != null && file.mimeType.startsWith("text/")) {
-                decryptedTextContent = try { temp.readText() } catch (e: Exception) { null }
-            }
+            repository.deleteFile(file.id)
+            loadFiles()
         }
     }
 
-    fun closeFile() {
-        decryptedTempFile?.delete()
-        currentPreviewFile = null
-        decryptedTempFile = null
-        decryptedTextContent = null
+    fun prepareExport(file: VaultFile) {
+        fileToExport = file
+    }
+
+    fun clearExportState() {
+        fileToExport = null
     }
 }

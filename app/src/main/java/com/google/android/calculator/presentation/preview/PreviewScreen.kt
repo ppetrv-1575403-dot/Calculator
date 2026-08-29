@@ -79,6 +79,7 @@ fun PreviewScreen(
     val currentTextContent = textContent
     
     Scaffold(
+        contentWindowInsets = WindowInsets(0, 0, 0, 0),
         topBar = {
             TopAppBar(
                 title = { Text(text = fileName, maxLines = 1, style = MaterialTheme.typography.titleMedium) },
@@ -94,11 +95,17 @@ fun PreviewScreen(
                 )
             )
         },
-        modifier = Modifier.fillMaxSize(),
+        modifier = Modifier
+            .fillMaxSize()
+            .statusBarsPadding()
+            .navigationBarsPadding(),
         containerColor = MaterialTheme.colorScheme.background
     ) { paddingValues ->
         Box(
-            modifier = Modifier.fillMaxSize().padding(paddingValues)
+            modifier = Modifier
+                .fillMaxSize()
+                .statusBarsPadding()
+                .padding(paddingValues)
         ) {
             when {
                 isLoading -> {

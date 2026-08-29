@@ -81,14 +81,14 @@ fun VaultTheme(
 
     val calculatorColors = if (darkTheme) DarkCalculatorColors else LightCalculatorColors
 
-    val view = LocalView.current
-    if (!view.isInEditMode) {
-        SideEffect {
-            val window = (view.context as Activity).window
-            window.statusBarColor = colorScheme.background.toArgb()
-            WindowCompat.getInsetsController(window, view).isAppearanceLightStatusBars = !darkTheme
-        }
-    }
+    //val view = LocalView.current
+    //if (!view.isInEditMode) {
+    //    SideEffect {
+    //        val window = (view.context as Activity).window
+    //)        window.statusBarColor = colorScheme.background.toArgb()
+    //        WindowCompat.getInsetsController(window, view).isAppearanceLightStatusBars = !darkTheme
+    //)    }
+    //}
 
     CompositionLocalProvider(LocalCalculatorColors provides calculatorColors) {
         MaterialTheme(

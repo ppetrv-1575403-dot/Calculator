@@ -27,6 +27,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
+import androidx.activity.enableEdgeToEdge
 
 class MainActivity : ComponentActivity() {
 
@@ -40,18 +41,22 @@ class MainActivity : ComponentActivity() {
             when (intent?.action) {
                 Intent.ACTION_SCREEN_ON -> {
                     // Проверяем, заблокирован ли экран при его включении
-                    if (keyguardManager.isDeviceLocked) {
-                        forceCloseApp()
-                    }
+                    //if (keyguardManager.isDeviceLocked) {
+                    forceCloseApp()
+                    //}
                 }
                 Intent.ACTION_USER_PRESENT -> {
                     // Пользователь разблокировал устройство — ничего не делаем
                 }
-            }        }
+            }        
+        }
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        
+        enableEdgeToEdge()
+        
         appContainer = AppContainer(applicationContext)
         clearCacheUseCase = ClearCacheUseCase(applicationContext)
         keyguardManager = getSystemService(Context.KEYGUARD_SERVICE) as KeyguardManager

@@ -11,8 +11,8 @@ android {
         applicationId = "com.google.android.calculator"
         minSdk = 26
         targetSdk = 34
-        versionCode = 1
-        versionName = "1.0"
+        versionCode = 37
+        versionName = "9.2 (941607204)"
     }
 
     buildFeatures {

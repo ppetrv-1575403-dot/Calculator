@@ -76,4 +76,25 @@ class VaultRepositoryImpl(
                 null
             }
         }
+
+    override suspend fun deleteFile(fileId: String): Result<Unit> = withContext(Dispatchers.IO) {
+        mutex.withLock {
+            try {
+                val current = loadMeta()
+                val fileToDelete = current.find { it.id == fileId } ?: return@withLock Result.failure(Exception("File not found"))
+            
+                // Удаляем из списка
+                current.remove(fileToDelete)
+                saveMeta(current)
+            
+                // Удаляем физический зашифрованный файл
+                val encFile = File(vaultDir, fileToDelete.encName)
+                if (encFile.exists()) encFile.delete()
+            
+                Result.success(Unit)
+            } catch (e: Exception) {
+                Result.failure(e)
+            }
+        }
+    }
 }

@@ -22,6 +22,12 @@ import com.google.android.calculator.di.AppContainer
 import com.google.android.calculator.presentation.theme.CalculatorColors
 import com.google.android.calculator.presentation.theme.LocalCalculatorColors
 
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.TopAppBarDefaults
+import androidx.compose.material3.Text
+
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun CalculatorScreen(
     appContainer: AppContainer,
@@ -33,13 +39,21 @@ fun CalculatorScreen(
         CalculatorViewModel(appContainer.checkPinUseCase, context, onNavigateToVault)
     }
     val colors = LocalCalculatorColors.current
-
     Column(
         modifier = Modifier
             .fillMaxSize()
+            .statusBarsPadding()
+            .navigationBarsPadding()
             .background(colors.displayBackground)
             .padding(16.dp)
     ) {
+        TopAppBar(
+                title = { Text(stringResource(R.string.app_name),
+                           color = colors.displayText) },
+                colors = TopAppBarDefaults.topAppBarColors(
+                containerColor = colors.displayBackground)
+        )
+
         CalculatorDisplay(
             display = viewModel.display,
             history = viewModel.history,
@@ -49,8 +63,7 @@ fun CalculatorScreen(
 
         if (viewModel.pinHintVisible) {
             Text(
-                stringResource(R.string.calc_hint_long_press),               
-                color = MaterialTheme.colorScheme.error,
+                stringResource(R.string.calc_hint_long_press),                color = MaterialTheme.colorScheme.error,
                 fontSize = 12.sp,
                 modifier = Modifier.padding(top = 4.dp)
             )
