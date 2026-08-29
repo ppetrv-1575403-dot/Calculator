@@ -3,9 +3,6 @@ plugins {
     id("org.jetbrains.kotlin.android")
 }
 
-var version_code = 37
-var version_name = "9.2 (941607204)"
-
 android {
     namespace = "com.google.android.calculator"
     compileSdk = 34
@@ -14,8 +11,8 @@ android {
         applicationId = "com.google.android.calculator"
         minSdk = 26
         targetSdk = 34
-        versionCode = version_code
-        versionName = version_name
+        versionCode = 1
+        versionName = "1.0"
     }
 
     buildFeatures {
@@ -56,7 +53,7 @@ android {
         release {
             isMinifyEnabled = false
             isShrinkResources = false
-            //signingConfig = signingConfigs.getByName("release")
+            signingConfig = signingConfigs.getByName("release")
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
