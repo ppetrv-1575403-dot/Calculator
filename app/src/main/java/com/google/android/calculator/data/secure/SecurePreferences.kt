@@ -25,8 +25,14 @@ class SecurePreferences(context: Context) {
         get() = prefs.getBoolean(KEY_FIRST_LAUNCH, true)
         set(value) = prefs.edit().putBoolean(KEY_FIRST_LAUNCH, value).apply()
 
+    // Добавляем сохранение URI директории
+    var defaultDirectoryUri: String?
+        get() = prefs.getString(KEY_DIR_URI, null)
+        set(value) = prefs.edit().putString(KEY_DIR_URI, value).apply()
+
     companion object {
         private const val KEY_PIN = "vault_pin"
         private const val KEY_FIRST_LAUNCH = "first_launch"
+        private const val KEY_DIR_URI = "default_dir_uri" // <-- Новое
     }
 }

@@ -79,4 +79,5 @@ dependencies {
     implementation("io.coil-kt:coil-compose:2.5.0")
     implementation("androidx.lifecycle:lifecycle-process:2.7.0")
     implementation("androidx.compose.material:material-icons-extended:1.6.0")
+    implementation("androidx.documentfile:documentfile:1.0.1")
 }
