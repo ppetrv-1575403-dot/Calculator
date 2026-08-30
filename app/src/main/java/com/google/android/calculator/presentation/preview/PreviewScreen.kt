@@ -3,6 +3,7 @@ package com.google.android.calculator.presentation.preview
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
+import android.widget.Toast
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.layout.*
@@ -21,13 +22,26 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import coil.compose.AsyncImage
 import com.google.android.calculator.di.AppContainer
-import kotlinx.coroutines.launch
 import java.io.File
-import com.google.android.calculator.presentation.utils.AndroidTools
-import com.google.android.calculator.domain.model.VaultFile
+
+private val CODE_EXTENSIONS = setOf(
+    "py", "js", "ts", "java", "kt", "kts", "cpp", "c", "h", "hpp", "cs", "php",
+    "rb", "go", "rs", "swift", "dart", "lua", "sql", "pl", "pm", "proto", "graphql"
+)
+private val WEB_EXTENSIONS = setOf(
+    "html", "htm", "css", "scss", "sass", "less", "xml", "json", "yaml", "yml", "toml"
+)
+private val DOC_EXTENSIONS = setOf(
+    "txt", "md", "markdown", "rst", "log", "csv", "ini", "cfg", "conf"
+)
+private val SCRIPT_EXTENSIONS = setOf(
+    "sh", "bash", "zsh", "ps1", "bat", "cmd"
+)
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -37,7 +51,6 @@ fun PreviewScreen(
     onBack: () -> Unit
 ) {
     val context = LocalContext.current
-    val scope = rememberCoroutineScope()
 
     var fileName by remember { mutableStateOf("Загрузка...") }
     var mimeType by remember { mutableStateOf("") }
@@ -46,91 +59,139 @@ fun PreviewScreen(
     var isLoading by remember { mutableStateOf(true) }
     var error by remember { mutableStateOf(false) }
 
-    // Загружаем и расшифровываем файл при открытии экрана
     LaunchedEffect(fileId) {
-        scope.launch {
-            try {
-                val files = appContainer.getFilesUseCase()
-                val file = files.find { it.id == fileId }
-                
-                if (file != null) {
-                    fileName = file.originalName
-                    mimeType = file.mimeType
-                    
-                    val decrypted = appContainer.vaultRepository.decryptToTempFile(file.encryptedFileName)
-                    tempFile = decrypted
-                    
-                    if (decrypted != null && file.mimeType.startsWith("text/")) {
-                        textContent = try { decrypted.readText() } catch (e: Exception) { null }
+        try {
+            val files = appContainer.getFilesUseCase()
+            val file = files.find { it.id == fileId }
+
+            if (file != null) {
+                fileName = file.originalName
+                mimeType = file.mimeType
+
+                val decrypted = appContainer.vaultRepository.decryptToTempFile(file.encryptedFileName)
+                tempFile = decrypted
+
+                if (decrypted != null && isTextLikeFile(file.originalName, file.mimeType)) {
+                    textContent = try {
+                        decrypted.readText(Charsets.UTF_8)
+                    } catch (e: Exception) {
+                        try {
+                            decrypted.readText(Charsets.ISO_8859_1)
+                        } catch (e2: Exception) {
+                            null
+                        }
                     }
-                } else {
-                    error = true
                 }
-            } catch (e: Exception) {
+            } else {
                 error = true
-                e.printStackTrace()
-            } finally {
-                isLoading = false
             }
+        } catch (e: Exception) {
+            error = true
+            e.printStackTrace()
+        } finally {
+            isLoading = false
         }
     }
-    
+
     val currentTempFile = tempFile
-    val currentTextContent = textContent
-    
+    val currentText = textContent
+    val isTextFile = isTextLikeFile(fileName, mimeType)
+    val extension = fileName.substringAfterLast(".", "").lowercase()
+    val languageName = getLanguageName(extension)
+    val isCode = extension in CODE_EXTENSIONS || extension in WEB_EXTENSIONS || extension in SCRIPT_EXTENSIONS
+
     Scaffold(
         contentWindowInsets = WindowInsets(0, 0, 0, 0),
-        topBar = {
-            TopAppBar(
-                title = { Text(text = fileName, maxLines = 1, style = MaterialTheme.typography.titleMedium) },
-                navigationIcon = {
-                    IconButton(onClick = onBack) {
-                        Icon(Icons.Default.ArrowBack, "Назад")
-                    }
-                },
-                colors = TopAppBarDefaults.topAppBarColors(
-                    containerColor = MaterialTheme.colorScheme.surface,
-                    titleContentColor = MaterialTheme.colorScheme.onSurface,
-                    navigationIconContentColor = MaterialTheme.colorScheme.onSurface
-                )
-            )
-        },
-        modifier = Modifier
-            .fillMaxSize()
-            .statusBarsPadding()
-            .navigationBarsPadding(),
+        modifier = Modifier.fillMaxSize(),
         containerColor = MaterialTheme.colorScheme.background
     ) { paddingValues ->
-        Box(
+        Column(
             modifier = Modifier
                 .fillMaxSize()
                 .statusBarsPadding()
+                .navigationBarsPadding() // <-- Исправляет вылезание за нижнюю панель
                 .padding(paddingValues)
         ) {
-            when {
-                isLoading -> {
-                    CircularProgressIndicator(modifier = Modifier.align(Alignment.Center))
+            // ===== ФИКСИРОВАННАЯ ШАПКА =====
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(8.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                IconButton(onClick = onBack) {
+                    @Suppress("DEPRECATION")
+                    Icon(Icons.Default.ArrowBack, contentDescription = "Назад")
                 }
-                error -> {
-                    Text("Ошибка загрузки файла", modifier = Modifier.align(Alignment.Center))
+                Text(
+                    text = fileName,
+                    style = MaterialTheme.typography.titleMedium,
+                    modifier = Modifier.padding(start = 8.dp).weight(1f),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+                // Компактная кнопка копирования в верхнем углу (только для текста)
+                if (isTextFile && currentText != null) {
+                    IconButton(onClick = {
+                        performClipboardCopy(context, currentText)
+                        Toast.makeText(context, "Текст скопирован", Toast.LENGTH_SHORT).show()
+                    }) {
+                        Icon(Icons.Default.ContentCopy, contentDescription = "Копировать")
+                    }
                 }
-                mimeType.startsWith("image/") && currentTempFile != null -> {
-                    ImageViewer(imageFile = currentTempFile)
-                }
-                mimeType.startsWith("text/") && currentTextContent != null -> {
-                    TextViewer(
-                        text = currentTextContent, 
-                        onCopy = { textToCopy -> AndroidTools.performClipboardCopy(context, textToCopy) }
+            }
+            Divider(modifier = Modifier.padding(horizontal = 8.dp))
+
+            // Бейдж языка (фиксированный)
+            if (isTextFile && currentText != null && languageName != "Text") {
+                Surface(
+                    shape = MaterialTheme.shapes.small,
+                    color = MaterialTheme.colorScheme.primaryContainer,
+                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)
+                ) {
+                    Text(
+                        text = languageName,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onPrimaryContainer,
+                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
                     )
                 }
-                else -> {
-                    UnsupportedFileView()
+            }
+
+            // ===== СКРОЛЛИМЫЙ КОНТЕНТ =====
+            Box(modifier = Modifier.weight(1f)) {
+                when {
+                    isLoading -> {
+                        CircularProgressIndicator(modifier = Modifier.align(Alignment.Center))
+                    }
+                    error -> {
+                        Text("Ошибка загрузки файла", modifier = Modifier.align(Alignment.Center))
+                    }
+                    mimeType.startsWith("image/") && currentTempFile != null -> {
+                        ImageViewer(imageFile = currentTempFile)
+                    }
+                    isTextFile && currentText != null -> {
+                        TextViewer(text = currentText, isCode = isCode)
+                    }
+                    else -> {
+                        UnsupportedFileView()
+                    }
                 }
+            }
+
+            // ===== ФИКСИРОВАННАЯ ИНФОРМАЦИЯ О ФАЙЛЕ =====
+            if (isTextFile && currentText != null) {
+                Divider()
+                Text(
+                    text = "Символов: ${currentText.length} • Строк: ${currentText.count { it == '\n' } + 1}",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 8.dp)
+                )
             }
         }
     }
-    
-    // Очищаем временный файл при закрытии экрана
+
     DisposableEffect(Unit) {
         onDispose {
             tempFile?.delete()
@@ -155,16 +216,16 @@ private fun ImageViewer(imageFile: File) {
             modifier = Modifier
                 .fillMaxSize()
                 .pointerInput(Unit) {
-                    detectTransformGestures { centroid: Offset, pan: Offset, zoom: Float, rotation: Float ->
+                    detectTransformGestures { _centroid: Offset, pan: Offset, zoom: Float, _rotation: Float ->
                         val newScale = (scale * zoom).coerceIn(1f, 10f)
-                        
+
                         if (newScale > 1f) {
                             val maxX = (newScale - 1) * size.width / 2
                             val maxY = (newScale - 1) * size.height / 2
-                            
+
                             val newOffsetX = (offsetX + pan.x).coerceIn(-maxX, maxX)
                             val newOffsetY = (offsetY + pan.y).coerceIn(-maxY, maxY)
-                            
+
                             scale = newScale
                             offsetX = newOffsetX
                             offsetY = newOffsetY
@@ -204,9 +265,7 @@ private fun ImageViewer(imageFile: File) {
 
         if (scale > 1f) {
             FloatingActionButton(
-                onClick = {
-                    scale = 1f; offsetX = 0f; offsetY = 0f; offset = Offset.Zero
-                },
+                onClick = { scale = 1f; offsetX = 0f; offsetY = 0f; offset = Offset.Zero },
                 modifier = Modifier.align(Alignment.BottomEnd).padding(16.dp),
                 containerColor = MaterialTheme.colorScheme.primary
             ) {
@@ -217,36 +276,22 @@ private fun ImageViewer(imageFile: File) {
 }
 
 @Composable
-private fun TextViewer(text: String, onCopy: (String) -> Unit) {
+private fun TextViewer(text: String, isCode: Boolean) {
+    // Только скроллимый текст, всё остальное вынесено наружу
     Column(
-        modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp)
+        modifier = Modifier
+            .fillMaxSize()
+            .verticalScroll(rememberScrollState())
+            .padding(16.dp)
     ) {
         SelectionContainer {
             Text(
                 text = text,
                 modifier = Modifier.fillMaxWidth(),
                 style = MaterialTheme.typography.bodyLarge,
+                fontFamily = if (isCode) FontFamily.Monospace else FontFamily.Default,
                 color = MaterialTheme.colorScheme.onSurface
             )
-        }
-
-        Spacer(modifier = Modifier.height(16.dp))
-
-        Text(
-            text = "Символов: ${text.length} • Строк: ${text.count { it == '\n' } + 1}",
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.padding(bottom = 8.dp)
-        )
-
-        Button(
-            onClick = { onCopy(text) },
-            modifier = Modifier.fillMaxWidth(),
-            colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)
-        ) {
-            Icon(Icons.Default.ContentCopy, contentDescription = null, modifier = Modifier.size(20.dp))
-            Spacer(modifier = Modifier.width(8.dp))
-            Text("Копировать весь текст")
         }
     }
 }
@@ -270,4 +315,57 @@ private fun UnsupportedFileView() {
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
     }
+}
+
+private fun isTextLikeFile(fileName: String, mimeType: String): Boolean {
+    if (mimeType.startsWith("text/")) return true
+    
+    val textMimeTypes = listOf(
+        "application/json",
+        "application/xml",
+        "application/javascript",
+        "application/x-sh",
+        "application/x-python",
+        "application/x-yaml"
+    )
+    if (mimeType in textMimeTypes) return true
+    
+    val ext = fileName.substringAfterLast(".", "").lowercase()
+    if (ext.isEmpty()) return true
+    
+    return ext in CODE_EXTENSIONS || ext in WEB_EXTENSIONS || ext in DOC_EXTENSIONS || ext in SCRIPT_EXTENSIONS
+}
+
+private fun getLanguageName(extension: String): String {
+    return when (extension.lowercase()) {
+        "py" -> "Python"
+        "js" -> "JavaScript"
+        "ts" -> "TypeScript"
+        "java" -> "Java"
+        "kt", "kts" -> "Kotlin"
+        "cpp", "c", "h", "hpp" -> "C/C++"
+        "cs" -> "C#"
+        "php" -> "PHP"
+        "rb" -> "Ruby"
+        "go" -> "Go"
+        "rs" -> "Rust"
+        "swift" -> "Swift"
+        "dart" -> "Dart"
+        "lua" -> "Lua"
+        "sql" -> "SQL"
+        "html", "htm" -> "HTML"
+        "css", "scss", "sass", "less" -> "CSS"
+        "json" -> "JSON"
+        "xml" -> "XML"
+        "yaml", "yml" -> "YAML"
+        "md", "markdown" -> "Markdown"
+        "sh", "bash", "zsh" -> "Shell"
+        else -> "Text"
+    }
+}
+
+private fun performClipboardCopy(context: Context, text: String) {
+    val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+    val clip = ClipData.newPlainText("vault_text", text)
+    clipboard.setPrimaryClip(clip)
 }
