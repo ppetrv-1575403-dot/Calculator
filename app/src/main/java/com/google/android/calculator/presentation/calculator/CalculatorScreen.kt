@@ -48,10 +48,10 @@ fun CalculatorScreen(
             .padding(16.dp)
     ) {
         TopAppBar(
-                title = { Text(stringResource(R.string.app_name),
-                           color = colors.displayText) },
-                colors = TopAppBarDefaults.topAppBarColors(
-                containerColor = colors.displayBackground)
+            title = { Text(stringResource(R.string.app_name),
+                        color = colors.displayText) },
+            colors = TopAppBarDefaults.topAppBarColors(
+            containerColor = colors.displayBackground)
         )
 
         CalculatorDisplay(
@@ -61,13 +61,14 @@ fun CalculatorScreen(
             colors = colors
         )
 
-        if (viewModel.pinHintVisible) {
+        /*if (viewModel.pinHintVisible) {
             Text(
-                stringResource(R.string.calc_hint_long_press),                color = MaterialTheme.colorScheme.error,
+                stringResource(R.string.calc_hint_long_press),                
+                color = MaterialTheme.colorScheme.error,
                 fontSize = 12.sp,
                 modifier = Modifier.padding(top = 4.dp)
             )
-        }
+        }*/
 
         Spacer(modifier = Modifier.weight(1f))
 
@@ -112,7 +113,8 @@ private fun CalculatorDisplay(
 
 @Composable
 private fun CalculatorKeypad(viewModel: CalculatorViewModel, colors: CalculatorColors) {
-    Column(        modifier = Modifier.fillMaxWidth(),
+    Column(
+        modifier = Modifier.fillMaxWidth(),
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
         Row(Modifier.fillMaxWidth(), Arrangement.spacedBy(12.dp)) {

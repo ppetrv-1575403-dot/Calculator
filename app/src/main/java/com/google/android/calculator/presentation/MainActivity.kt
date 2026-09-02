@@ -37,14 +37,14 @@ class MainActivity : ComponentActivity() {
         override fun onReceive(context: Context?, intent: Intent?) {
             if (intent?.action == Intent.ACTION_SCREEN_OFF) {
                 Log.d("MainActivity", "Screen OFF received")
-                softExitToCalculator()
+                cleanupAndRemoveFromRecents()
             }
         }
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-
+        
         enableEdgeToEdge()
 
         appContainer = AppContainer(applicationContext)
@@ -81,23 +81,13 @@ class MainActivity : ComponentActivity() {
     private fun observeAppLifecycle() {
         val observer = object : DefaultLifecycleObserver {
             override fun onStop(owner: LifecycleOwner) {
-                Log.d("MainActivity", "onStop called, isVaultOpen=$isVaultOpen, isFileOp=${appContainer.isFileOperationInProgress.value}")
-
-                if (isVaultOpen) {
-                    // Хранилище открыто — закрываем его
-                    softExitToCalculator()
-                } else {
-                    // Хранилище закрыто — проверяем, идёт ли операция с файлами
-                    if (!appContainer.isFileOperationInProgress.value) {
-                        Log.d("MainActivity", "No file operation, finishing task")
-                        finishAndRemoveTask()
-                    } else {
-                        Log.d("MainActivity", "File operation in progress, keeping app alive")
-                    }
-                }
+                Log.d("MainActivity", "onStop called, isVaultOpen=$isVaultOpen")
+                // ВСЕГДА удаляем из recents при сворачивании,
+                // если не идёт файловая операция
+                cleanupAndRemoveFromRecents()
             }
         }
-
+        
         ProcessLifecycleOwner.get().lifecycle.addObserver(observer)
     }
 
@@ -111,18 +101,28 @@ class MainActivity : ComponentActivity() {
         isVaultOpen = false
     }
 
-    private fun softExitToCalculator() {
-        if (!isVaultOpen) {
-            Log.d("MainActivity", "Vault not open, skipping")
+    /**
+     * Единая функция очистки: удаляет кэш если хранилище открыто,
+     * и ВСЕГДА убирает приложение из списка недавних.
+     */
+    private fun cleanupAndRemoveFromRecents() {
+        // Если файловая операция в процессе — не трогаем приложение
+        if (appContainer.isFileOperationInProgress.value) {
+            Log.d("MainActivity", "File operation in progress, keeping app alive")
             return
         }
 
-        Log.d("MainActivity", "Soft exit to calculator")
-        serviceScope.launch(Dispatchers.IO) {
-            clearCacheUseCase()
+        // Если хранилище было открыто — очищаем кэш
+        if (isVaultOpen) {
+            Log.d("MainActivity", "Vault was open, clearing cache")
+            serviceScope.launch(Dispatchers.IO) {
+                clearCacheUseCase()
+            }
         }
+
         isVaultOpen = false
-        appContainer.triggerNavigateToCalculator()
+        Log.d("MainActivity", "Removing from recents")
+        finishAndRemoveTask()
     }
 
     companion object {
