@@ -1,4 +1,4 @@
-package com.google.android.calculator.presentation.utils
+package com.google.android.calculator.utils
 
 import android.content.Context
 import android.content.ClipData

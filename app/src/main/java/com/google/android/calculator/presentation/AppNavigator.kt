@@ -21,7 +21,7 @@ import com.google.android.calculator.presentation.vault.VaultScreen
 import com.google.android.calculator.utils.PermissionUtils
 
 @Composable
-fun AppNavigation(appContainer: AppContainer, mainActivity: MainActivity) {
+fun AppNavigator(appContainer: AppContainer, mainActivity: MainActivity) {
     val navController = rememberNavController()
     val startDestination = if (appContainer.isFirstLaunchUseCase()) "setup_pin" else "calculator"
 
