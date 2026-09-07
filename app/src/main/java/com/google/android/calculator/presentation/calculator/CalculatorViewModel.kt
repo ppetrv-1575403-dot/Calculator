@@ -1,109 +1,119 @@
 package com.google.android.calculator.presentation.calculator
 
-import android.content.Context
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.lifecycle.ViewModel
-import com.google.android.calculator.R
-import com.google.android.calculator.data.parser.SimpleExpressionParser
 import com.google.android.calculator.domain.usecase.CheckPinUseCase
 
 class CalculatorViewModel(
     private val checkPinUseCase: CheckPinUseCase,
-    private val context: Context,
     private val onVaultOpened: () -> Unit
 ) : ViewModel() {
 
-    var display by mutableStateOf("")
-        private set
-    var history by mutableStateOf("")
-        private set
-    var isError by mutableStateOf(false)
-        private set
-    var pinHintVisible by mutableStateOf(false)
-        private set
+    var display by mutableStateOf(""); private set
+    var history by mutableStateOf(""); private set
+    var isError by mutableStateOf(false); private set
+    var pinHintVisible by mutableStateOf(false); private set
 
-    private val parser = SimpleExpressionParser()
-
-    fun onDigitPressed(digit: String) {
+    fun onDigitPressed(d: String) {
         if (isError) onClear()
         pinHintVisible = false
-        display += digit
+        display += d
+    }
+
+    fun onDecimalPressed() {
+        if (isError) onClear()
+        val last = display.split('+', '-', '×', '÷', '(', ')').last()
+        if (!last.contains('.')) display += if (last.isEmpty()) "0." else "."
     }
 
     fun onOperatorPressed(op: String) {
         if (isError) return
         pinHintVisible = false
-        if (display.isNotEmpty() && display.last() !in "+-×÷*/") {
-            display += op
-        }
+        if (display.isNotEmpty()) display += op
     }
 
-    fun onDecimalPressed() {
-        if (isError) return
-        val lastNumber = Regex("[\\d.]+$").find(display)?.value ?: ""
-        if (!lastNumber.contains(".")) display += "."
-    }
-
-    fun onParenthesisPressed(paren: String) {
-        if (isError) return        
-        display += paren
-    }
-
-    fun onClear() {
-        display = ""
-        history = ""
-        isError = false
-        pinHintVisible = false
-    }
-
-    fun onBackspace() {
-        if (display.isNotEmpty()) display = display.dropLast(1)
+    fun onParenthesisPressed(p: String) {
+        if (isError) onClear()
+        val open = display.count { it == '(' }
+        val close = display.count { it == ')' }
+        if (p == "(") display += p
+        else if (open > close) display += p
     }
 
     fun onPercentPressed() {
-        if (isError || display.isEmpty()) return
-        try {
-            val current = parser.evaluate(display)
-            display = formatResult(current / 100)
-        } catch (e: Exception) {
-            isError = true
-            display = context.getString(R.string.calc_error)
-        }
+        if (isError) return
+        val lastNum = display.split('+', '-', '×', '÷', '(', ')').last()
+        val v = lastNum.toDoubleOrNull() ?: return
+        display = display.removeSuffix(lastNum) + formatResult(v / 100)
+    }
+
+    fun onClear() {
+        display = ""; history = ""; isError = false; pinHintVisible = false
     }
 
     fun onEqualsPressed() {
         if (display.isEmpty()) return
-        pinHintVisible = false
         try {
-            val result = parser.evaluate(display)
+            val result = Parser(display).parse()
             history = "$display ="
             display = formatResult(result)
             isError = false
         } catch (e: Exception) {
             isError = true
-            display = context.getString(R.string.calc_error)
         }
     }
 
     fun onEqualsLongPressed() {
-        if (display.isEmpty()) {
-            pinHintVisible = true
-            return
-        }
+        if (display.isEmpty()) { pinHintVisible = true; return }
         if (checkPinUseCase(display)) {
             onVaultOpened()
             onClear()
         } else {
             pinHintVisible = true
-            isError = true            
-            display = context.getString(R.string.calc_invalid_pin)
         }
     }
 
-    private fun formatResult(result: Double): String =
-        if (result.isNaN() || result.isInfinite()) context.getString(R.string.calc_error)
-        else if (result == result.toLong().toDouble()) result.toLong().toString()
-        else "%.8f".format(result).trimEnd('0').trimEnd('.')
+    private fun formatResult(v: Double): String {
+        if (v.isNaN() || v.isInfinite()) throw ArithmeticException()
+        return if (v % 1.0 == 0.0) v.toLong().toString() else v.toString()
+    }
+
+    private class Parser(private val s: String) {
+        private var i = 0
+        fun parse(): Double {
+            val v = parseExpr()
+            if (i < s.length) throw Exception("Parse error")
+            return v
+        }
+        private fun parseExpr(): Double {
+            var v = parseTerm()
+            while (i < s.length && (s[i] == '+' || s[i] == '-')) {
+                val op = s[i++]; val r = parseTerm()
+                v = if (op == '+') v + r else v - r
+            }
+            return v
+        }
+        private fun parseTerm(): Double {
+            var v = parseFactor()
+            while (i < s.length && (s[i] == '×' || s[i] == '÷')) {
+                val op = s[i++]; val r = parseFactor()
+                v = if (op == '×') v * r else v / r
+            }
+            return v
+        }
+        private fun parseFactor(): Double {
+            if (i < s.length && s[i] == '(') {
+                i++
+                val v = parseExpr()
+                if (i < s.length && s[i] == ')') i++
+                return v
+            }
+            val start = i
+            while (i < s.length && (s[i].isDigit() || s[i] == '.')) i++
+            if (start == i) throw Exception("Parse error")
+            return s.substring(start, i).toDouble()
+        }
+    }
 }

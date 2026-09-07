@@ -1,15 +1,12 @@
 package com.google.android.calculator.presentation.vault
 
 import android.content.Context
+import android.content.Intent
 import android.net.Uri
 import android.os.Environment
+import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.fadeIn
-import androidx.compose.animation.fadeOut
-import androidx.compose.animation.scaleIn
-import androidx.compose.animation.scaleOut
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -20,127 +17,95 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.google.android.calculator.R
 import com.google.android.calculator.di.AppContainer
+import com.google.android.calculator.domain.model.SavedLocation
 import com.google.android.calculator.domain.model.VaultFile
+import com.google.android.calculator.domain.model.VaultFolder
 import com.google.android.calculator.utils.PermissionUtils
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
-import android.widget.Toast
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun VaultScreen(
     appContainer: AppContainer,
     onBack: () -> Unit,
-    onNavigateToPicker: () -> Unit,
+    onNavigateToPicker: (String) -> Unit,
+    onAddLocation: (String) -> Unit,
+    onOpenMap: (String) -> Unit,
     onPreviewFile: (String) -> Unit
 ) {
     val context = LocalContext.current
     val viewModel = remember {
-        VaultViewModel(
-            appContainer.addFileUseCase,
-            appContainer.getFilesUseCase,
-            appContainer.vaultRepository,
-            appContainer
-        )
+        VaultViewModel(appContainer.addFileUseCase, appContainer.getFilesUseCase, appContainer.vaultRepository, appContainer)
     }
     val scope = rememberCoroutineScope()
+    var fabExpanded by remember { mutableStateOf(false) }
+    var showCreateFolderDialog by remember { mutableStateOf(false) }
+    var folderName by remember { mutableStateOf("") }
 
-    // Проверяем наличие полного доступа к файлам
     val hasStoragePermission = PermissionUtils.hasManageExternalStorage()
+    val currentFolderId = viewModel.currentFolder?.id ?: ""
 
-    // Лаунчер для экспорта (используется только как fallback, если разрешение не выдано)
-    val exportLauncher = rememberLauncherForActivityResult(
-        ActivityResultContracts.CreateDocument("*/*")
-    ) { uri ->
+    val permissionSettingsLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.StartActivityForResult()
+    ) {
+        appContainer.setFileOperationInProgress(false)
+    }
+
+    LaunchedEffect(Unit) { appContainer.vaultRefresh.collect { viewModel.refresh() } }
+
+    val exportLauncher = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("*/*")) { uri ->
         appContainer.setFileOperationInProgress(false)
         if (uri != null && viewModel.fileToExport != null) {
             scope.launch {
-                val tempFile = appContainer.vaultRepository.decryptToTempFile(
-                    viewModel.fileToExport!!.encryptedFileName
-                )
+                val tempFile = appContainer.vaultRepository.decryptToTempFile(viewModel.fileToExport!!.encryptedFileName)
                 if (tempFile != null) {
-                    context.contentResolver.openOutputStream(uri)?.use { out ->
-                        tempFile.inputStream().use { it.copyTo(out) }
-                    }
+                    context.contentResolver.openOutputStream(uri)?.use { out -> tempFile.inputStream().use { it.copyTo(out) } }
                     tempFile.delete()
                 }
                 viewModel.clearExportState()
             }
-        } else {
-            viewModel.clearExportState()
-        }
+        } else viewModel.clearExportState()
     }
 
-    // Обработка запроса на экспорт
     LaunchedEffect(viewModel.fileToExport) {
         val fileToExport = viewModel.fileToExport
         if (fileToExport != null) {
-            if (PermissionUtils.hasManageExternalStorage()) {
+            if (hasStoragePermission) {
                 scope.launch {
                     appContainer.setFileOperationInProgress(true)
                     try {
-                        // 1. Расшифровываем файл
                         val tempFile = appContainer.vaultRepository.decryptToTempFile(fileToExport.encryptedFileName)
-
                         if (tempFile != null && tempFile.exists()) {
-                            // 2. Получаем папку Загрузки и ГАРАНТИРОВАННО создаем её, если её нет
                             val downloadDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
-                            if (!downloadDir.exists()) {
-                                downloadDir.mkdirs()
-                            }
-
-                            // 3. Формируем имя файла (с защитой от перезаписи)
+                            if (!downloadDir.exists()) downloadDir.mkdirs()
                             var destFile = File(downloadDir, fileToExport.originalName)
                             var counter = 1
                             while (destFile.exists()) {
-                                val nameWithoutExt = destFile.nameWithoutExtension
-                                val ext = destFile.extension
-                                destFile = File(downloadDir, "${nameWithoutExt}_($counter).$ext")
+                                destFile = File(downloadDir, "${destFile.nameWithoutExtension}_($counter).${destFile.extension}")
                                 counter++
                             }
-
-                            // 4. Копируем данные
-                            withContext(Dispatchers.IO) {
-                                tempFile.inputStream().use { input ->
-                                    destFile.outputStream().use { output ->
-                                        input.copyTo(output)
-                                    }
-                                }
-                            }
-
-                            // 5. Удаляем временный файл
+                            withContext(Dispatchers.IO) { tempFile.inputStream().use { i -> destFile.outputStream().use { o -> i.copyTo(o) } } }
                             tempFile.delete()
-
-                            // 6. Уведомляем об успехе
-                            withContext(Dispatchers.Main) {
-                                Toast.makeText(context, "✅ Файл сохранен в Загрузки", Toast.LENGTH_LONG).show()
-                            }
-                        } else {
-                            withContext(Dispatchers.Main) {
-                                Toast.makeText(context, "❌ Ошибка: не удалось расшифровать файл", Toast.LENGTH_LONG).show()
-                            }
+                            withContext(Dispatchers.Main) { Toast.makeText(context, "✅ Сохранено в Загрузки", Toast.LENGTH_LONG).show() }
                         }
                     } catch (e: Exception) {
-                        e.printStackTrace()
-                        withContext(Dispatchers.Main) {
-                            Toast.makeText(context, "❌ Ошибка экспорта: ${e.message}", Toast.LENGTH_LONG).show()
-                        }
+                        withContext(Dispatchers.Main) { Toast.makeText(context, "❌ ${e.message}", Toast.LENGTH_LONG).show() }
                     } finally {
-                        // 7. Очищаем состояние в любом случае
                         viewModel.clearExportState()
                         appContainer.setFileOperationInProgress(false)
                     }
                 }
             } else {
-                // Fallback: если разрешение вдруг отозвали, используем системный диалог
                 appContainer.setFileOperationInProgress(true)
                 exportLauncher.launch(fileToExport.originalName)
             }
@@ -150,117 +115,227 @@ fun VaultScreen(
     Scaffold(
         contentWindowInsets = WindowInsets(0, 0, 0, 0),
         floatingActionButton = {
-            AnimatedVisibility(
-                visible = true,
-                enter = scaleIn() + fadeIn(),
-                exit = scaleOut() + fadeOut()
-            ) {
-                FloatingActionButton(
-                    onClick = {
+            Column(horizontalAlignment = Alignment.End, modifier = Modifier.navigationBarsPadding().padding(16.dp)) {
+                if (fabExpanded) {
+                    MiniFab(Icons.Default.Add, "Файл") {
+                        fabExpanded = false
                         if (hasStoragePermission) {
-                            onNavigateToPicker()
+                            onNavigateToPicker(currentFolderId)
                         } else {
-                            PermissionUtils.launchManageStorageSettings(context)
+                            appContainer.setFileOperationInProgress(true)
+                            permissionSettingsLauncher.launch(
+                                Intent(android.provider.Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION).apply {
+                                    data = Uri.parse("package:${context.packageName}")
+                                }
+                            )
                         }
-                    },
-                    modifier = Modifier
-                        .navigationBarsPadding()
-                        .padding(16.dp),
+                    }
+                    Spacer(Modifier.height(8.dp))
+                    MiniFab(Icons.Default.AddLocation, "Точка") { fabExpanded = false; onAddLocation(currentFolderId) }
+                    Spacer(Modifier.height(8.dp))
+                    MiniFab(Icons.Default.CreateNewFolder, "Папка") { fabExpanded = false; folderName = ""; showCreateFolderDialog = true }
+                    Spacer(Modifier.height(8.dp))
+                }
+                FloatingActionButton(
+                    onClick = { fabExpanded = !fabExpanded },
                     containerColor = MaterialTheme.colorScheme.primary,
                     shape = CircleShape
                 ) {
-                    Icon(
-                        imageVector = if (hasStoragePermission) Icons.Default.Add else Icons.Default.FolderOpen,
-                        contentDescription = if (hasStoragePermission) "Добавить файл" else "Запросить доступ"
-                    )
+                    Icon(if (fabExpanded) Icons.Default.Close else Icons.Default.Add, "Добавить")
                 }
             }
         },
         containerColor = MaterialTheme.colorScheme.background
     ) { paddingValues ->
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .statusBarsPadding()
-                .padding(paddingValues)
-                .padding(16.dp)
-        ) {
-            // Верхняя панель
-            Row(
-                modifier = Modifier.fillMaxWidth().padding(bottom = 16.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                IconButton(onClick = onBack) {
+        Column(Modifier.fillMaxSize().statusBarsPadding().padding(paddingValues).padding(16.dp)) {
+
+            Row(Modifier.fillMaxWidth().padding(bottom = 16.dp), verticalAlignment = Alignment.CenterVertically) {
+                IconButton(onClick = {
+                    if (viewModel.itemToMove != null) {
+                        viewModel.cancelMove()
+                    } else if (!viewModel.navigateUpFolder()) {
+                        onBack()
+                    }
+                }) {
                     @Suppress("DEPRECATION")
-                    Icon(Icons.Default.ArrowBack, contentDescription = "Назад")
+                    Icon(Icons.Default.ArrowBack, "Назад")
                 }
                 Text(
-                    text = stringResource(R.string.vault_title),
+                    viewModel.itemToMove?.let { "Выберите папку для перемещения" }
+                        ?: (viewModel.currentFolder?.name ?: stringResource(R.string.vault_title)),
                     style = MaterialTheme.typography.headlineSmall,
-                    modifier = Modifier.padding(start = 8.dp)
+                    modifier = Modifier.padding(start = 8.dp).weight(1f),
+                    maxLines = 1, overflow = TextOverflow.Ellipsis
                 )
+                if (viewModel.itemToMove != null) {
+                    TextButton(onClick = { viewModel.cancelMove() }) { Text("Отмена") }
+                }
             }
 
-            // Основное содержимое экрана
             when {
                 !hasStoragePermission -> {
-                    // Экран запроса разрешений
-                    Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                            Text("Нужен доступ ко всем файлам", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            Spacer(Modifier.height(24.dp))
+                            Button(onClick = {
+                                appContainer.setFileOperationInProgress(true)
+                                permissionSettingsLauncher.launch(
+                                    Intent(android.provider.Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION).apply {
+                                        data = Uri.parse("package:${context.packageName}")
+                                    }
+                                )
+                            }) { Text("Открыть настройки") }
+                        }
+                    }
+                }
+                viewModel.items.isEmpty() && viewModel.itemToMove == null -> {
+                    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                        Text(stringResource(R.string.vault_empty), color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.bodyLarge)
+                    }
+                }
+                else -> {
+                    LazyColumn(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        items(viewModel.items) { item ->
+                            when (item) {
+                                is VaultItem.FolderItem -> FolderListItem(
+                                    folder = item.folder,
+                                    isMoveTarget = viewModel.itemToMove != null,
+                                    onOpen = {
+                                        if (viewModel.itemToMove != null) {
+                                            viewModel.moveToFolder(item.folder)
+                                        } else {
+                                            viewModel.openFolder(item.folder)
+                                        }
+                                    },
+                                    onDelete = { viewModel.deleteFolder(item.folder) }
+                                )
+                                is VaultItem.LocationItem -> LocationListItem(
+                                    location = item.location,
+                                    isSelectedForMove = viewModel.itemToMove == item,
+                                    moveMode = viewModel.itemToMove != null,
+                                    onOpenMap = { if (viewModel.itemToMove == null) onOpenMap(item.location.id) },
+                                    onMove = { viewModel.startMove(item) },
+                                    onDelete = { viewModel.deleteLocation(item.location.id) }
+                                )
+                                is VaultItem.FileItem -> FileListItem(
+                                    file = item.file,
+                                    isSelectedForMove = viewModel.itemToMove == item,
+                                    moveMode = viewModel.itemToMove != null,
+                                    onPreview = { if (viewModel.itemToMove == null) onPreviewFile(item.file.id) },
+                                    onExport = { viewModel.prepareExport(item.file) },
+                                    onMove = { viewModel.startMove(item) },
+                                    onDelete = { viewModel.deleteFile(item.file) }
+                                )
+                            }
+                        }
+                    }
+
+                    if (viewModel.itemToMove != null && viewModel.currentFolder != null) {
+                        Spacer(Modifier.height(8.dp))
                         Column(
-                            horizontalAlignment = Alignment.CenterHorizontally,
-                            modifier = Modifier.padding(16.dp)
-                        ) {
-                            Icon(
-                                imageVector = Icons.Default.FolderOff,
-                                contentDescription = null,
-                                modifier = Modifier.size(64.dp),
-                                tint = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                            Spacer(modifier = Modifier.height(16.dp))
-                            Text(
-                                "Для работы с файлами необходимо разрешить приложению доступ ко всем файлам на устройстве.",
-                                style = MaterialTheme.typography.bodyLarge,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                            Spacer(modifier = Modifier.height(24.dp))
-                            Button(onClick = { PermissionUtils.launchManageStorageSettings(context) }) {
-                                Text("Открыть настройки")
+                            modifier = Modifier.navigationBarsPadding(),
+                            verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Button(
+                                onClick = { viewModel.moveToParentFolder() },
+                                modifier = Modifier.fillMaxWidth(),
+                                colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.secondaryContainer)
+                            ) {
+                                Icon(Icons.Default.ArrowUpward, null, Modifier.size(20.dp))
+                                Spacer(Modifier.width(8.dp))
+                                Text("Переместить на уровень выше")
+                            }
+                            if (viewModel.currentFolder?.parentId != null) {
+                                Button(
+                                    onClick = { viewModel.moveToFolder(null) },
+                                    modifier = Modifier.fillMaxWidth(),
+                                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.secondaryContainer)
+                                ) {
+                                    Icon(Icons.Default.Home, null, Modifier.size(20.dp))
+                                    Spacer(Modifier.width(8.dp))
+                                    Text("Переместить в корень хранилища")
+                                }
                             }
                         }
                     }
                 }
-                viewModel.files.isEmpty() -> {
-                    // Пустое хранилище
-                    Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                            Icon(
-                                imageVector = Icons.Default.FolderOff,
-                                contentDescription = null,
-                                modifier = Modifier.size(64.dp),
-                                tint = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                            Spacer(modifier = Modifier.height(16.dp))
-                            Text(
-                                stringResource(R.string.vault_empty),
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                style = MaterialTheme.typography.bodyLarge
-                            )
-                        }
-                    }
-                }
-                else -> {
-                    // Список файлов
-                    LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                        items(viewModel.files) { file ->
-                            FileListItem(
-                                file = file,
-                                onPreview = { onPreviewFile(file.id) },
-                                onExport = { viewModel.prepareExport(file) },
-                                onDelete = { viewModel.deleteFile(file) }
-                            )
-                        }
-                    }
-                }
+            }
+        }
+    }
+
+    if (showCreateFolderDialog) {
+        AlertDialog(
+            onDismissRequest = { showCreateFolderDialog = false },
+            title = { Text("Новая папка") },
+            text = { OutlinedTextField(folderName, { folderName = it }, label = { Text("Название папки") }, singleLine = true) },
+            confirmButton = {
+                TextButton(onClick = {
+                    if (folderName.isNotBlank()) viewModel.createFolder(folderName.trim())
+                    showCreateFolderDialog = false
+                }) { Text("Создать") }
+            },
+            dismissButton = { TextButton(onClick = { showCreateFolderDialog = false }) { Text("Отмена") } }
+        )
+    }
+}
+
+@Composable
+private fun MiniFab(icon: ImageVector, label: String, onClick: () -> Unit) {
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Surface(tonalElevation = 4.dp, shape = MaterialTheme.shapes.small) {
+            Text(label, Modifier.padding(horizontal = 10.dp, vertical = 6.dp), style = MaterialTheme.typography.bodySmall)
+        }
+        Spacer(Modifier.width(8.dp))
+        SmallFloatingActionButton(onClick = onClick, shape = CircleShape) { Icon(icon, label, Modifier.size(20.dp)) }
+    }
+}
+
+@Composable
+private fun FolderListItem(folder: VaultFolder, isMoveTarget: Boolean, onOpen: () -> Unit, onDelete: () -> Unit) {
+    Card(
+        onClick = onOpen,
+        colors = CardDefaults.cardColors(
+            containerColor = if (isMoveTarget) MaterialTheme.colorScheme.primaryContainer
+                else MaterialTheme.colorScheme.surface
+        )
+    ) {
+        Row(Modifier.fillMaxWidth().padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
+            Icon(Icons.Default.Folder, null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(32.dp).padding(end = 12.dp))
+            Text(folder.name, style = MaterialTheme.typography.bodyLarge, color = MaterialTheme.colorScheme.onSurface,
+                modifier = Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis)
+            if (!isMoveTarget) {
+                IconButton(onClick = onDelete) { Icon(Icons.Default.Delete, "Удалить", tint = MaterialTheme.colorScheme.error) }
+            }
+        }
+    }
+}
+
+@Composable
+private fun LocationListItem(
+    location: SavedLocation,
+    isSelectedForMove: Boolean,
+    moveMode: Boolean,
+    onOpenMap: () -> Unit,
+    onMove: () -> Unit,
+    onDelete: () -> Unit
+) {
+    Card(
+        onClick = onOpenMap,
+        colors = CardDefaults.cardColors(
+            containerColor = if (isSelectedForMove) MaterialTheme.colorScheme.primaryContainer
+                else MaterialTheme.colorScheme.surface
+        )
+    ) {
+        Row(Modifier.fillMaxWidth().padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
+            Icon(Icons.Default.Place, null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(32.dp).padding(end = 12.dp))
+            Column(Modifier.weight(1f)) {
+                Text(location.name, style = MaterialTheme.typography.bodyLarge, color = MaterialTheme.colorScheme.onSurface, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Text("%.5f, %.5f".format(location.latitude, location.longitude), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+            if (location.photoId != null) Icon(Icons.Default.Image, "Фото", tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(20.dp).padding(end = 4.dp))
+            if (!moveMode) {
+                IconButton(onClick = onMove) { Icon(Icons.Default.DriveFileMove, "Переместить", tint = MaterialTheme.colorScheme.onSurfaceVariant) }
+                IconButton(onClick = onDelete) { Icon(Icons.Default.Delete, "Удалить", tint = MaterialTheme.colorScheme.error) }
             }
         }
     }
@@ -269,90 +344,50 @@ fun VaultScreen(
 @Composable
 private fun FileListItem(
     file: VaultFile,
+    isSelectedForMove: Boolean,
+    moveMode: Boolean,
     onPreview: () -> Unit,
     onExport: () -> Unit,
+    onMove: () -> Unit,
     onDelete: () -> Unit
 ) {
     var showDeleteConfirm by remember { mutableStateOf(false) }
-
     Card(
         onClick = onPreview,
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
+        colors = CardDefaults.cardColors(
+            containerColor = if (isSelectedForMove) MaterialTheme.colorScheme.primaryContainer
+                else MaterialTheme.colorScheme.surface
+        )
     ) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(12.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
+        Row(Modifier.fillMaxWidth().padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
             val icon = when {
                 file.mimeType.startsWith("image/") -> Icons.Default.Image
                 file.mimeType.startsWith("text/") -> Icons.Default.Description
                 file.mimeType.startsWith("video/") -> Icons.Default.VideoLibrary
                 else -> Icons.Default.InsertDriveFile
             }
-
-            Icon(
-                imageVector = icon,
-                contentDescription = null,
-                tint = MaterialTheme.colorScheme.primary,
-                modifier = Modifier.size(32.dp).padding(end = 12.dp)
-            )
-
-            Column(modifier = Modifier.weight(1f)) {
-                Text(
-                    text = file.originalName,
-                    style = MaterialTheme.typography.bodyLarge,
-                    color = MaterialTheme.colorScheme.onSurface,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
-                Text(
-                    text = file.mimeType,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
+            Icon(icon, null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(32.dp).padding(end = 12.dp))
+            Column(Modifier.weight(1f)) {
+                Text(file.originalName, style = MaterialTheme.typography.bodyLarge, color = MaterialTheme.colorScheme.onSurface, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Text(file.mimeType, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
-
-            IconButton(onClick = onExport) {
-                Icon(
-                    Icons.Default.Share,
-                    "Экспорт",
-                    tint = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            }
-            IconButton(onClick = { showDeleteConfirm = true }) {
-                Icon(
-                    Icons.Default.Delete,
-                    "Удалить",
-                    tint = MaterialTheme.colorScheme.error
-                )
+            if (!moveMode) {
+                IconButton(onClick = onMove) { Icon(Icons.Default.DriveFileMove, "Переместить", tint = MaterialTheme.colorScheme.onSurfaceVariant) }
+                IconButton(onClick = onExport) { Icon(Icons.Default.Share, "Экспорт", tint = MaterialTheme.colorScheme.onSurfaceVariant) }
+                IconButton(onClick = { showDeleteConfirm = true }) { Icon(Icons.Default.Delete, "Удалить", tint = MaterialTheme.colorScheme.error) }
             }
         }
     }
-
-    // Диалог подтверждения удаления
     if (showDeleteConfirm) {
         AlertDialog(
             onDismissRequest = { showDeleteConfirm = false },
             title = { Text("Удалить файл?") },
-            text = { Text("Файл \"${file.originalName}\" будет удалён из хранилища безвозвратно.") },
+            text = { Text("Файл \"${file.originalName}\" будет удалён безвозвратно.") },
             confirmButton = {
-                TextButton(
-                    onClick = {
-                        onDelete()
-                        showDeleteConfirm = false
-                    },
-                    colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.error)
-                ) {
-                    Text("Удалить")
-                }
+                TextButton(onClick = { onDelete(); showDeleteConfirm = false },
+                    colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.error)) { Text("Удалить") }
             },
-            dismissButton = {
-                TextButton(onClick = { showDeleteConfirm = false }) {
-                    Text("Отмена")
-                }
-            }
+            dismissButton = { TextButton(onClick = { showDeleteConfirm = false }) { Text("Отмена") } }
         )
     }
 }

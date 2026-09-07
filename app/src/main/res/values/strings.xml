@@ -29,4 +29,9 @@
     <string name="overlay_permission_message">Разрешите отображение поверх других окон, чтобы кнопка быстрого закрытия работала.</string>
     <string name="overlay_permission_open_settings">Open settings</string>
     <string name="overlay_permission_cancel">Cancel</string>
+
+    <!-- Location -->
+    <string name="location_back">Назад</string>
+    <string name="location_get_titles_str">Загрузка тайлов: %$1s</string>
+
 </resources>

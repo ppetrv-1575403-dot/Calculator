@@ -11,90 +11,122 @@ import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import java.io.File
 
-class VaultRepositoryImpl(
-    private val context: Context,
-    private val crypto: CryptoManager
-) : VaultRepository {
+class VaultRepositoryImpl(private val context: Context, private val crypto: CryptoManager) : VaultRepository {
 
-    private val vaultDir = File(context.filesDir, "secure_vault").apply { mkdirs() }
+    private val vaultDir = File(context.filesDir, "vault").apply { mkdirs() }
     private val metaFile = File(context.filesDir, "vault_meta.txt")
     private val mutex = Mutex()
 
-    private data class Meta(val id: String, val originalName: String, val encName: String, val mime: String)
+    private data class Meta(
+        val id: String,
+        val originalName: String,
+        val encName: String,
+        val mime: String,
+        val folderId: String? = null
+    )
 
     private fun loadMeta(): MutableList<Meta> {
-        if (!metaFile.exists()) return mutableListOf()
-        return metaFile.readLines().mapNotNull { line ->
-            val parts = line.split("|||")
-            if (parts.size == 4) Meta(parts[0], parts[1], parts[2], parts[3]) else null
-        }.toMutableList()
+        try {
+            if (!metaFile.exists()) return mutableListOf()
+            return metaFile.readLines().mapNotNull { line ->
+                val p = line.split("|||")
+                if (p.size >= 4) Meta(
+                    p[0], p[1], p[2], p[3],
+                    if (p.size >= 5) p[4].takeIf { it.isNotEmpty() } else null
+                ) else null
+            }.toMutableList()
+        } catch (e: Exception) { return mutableListOf() }
     }
 
-    private fun saveMeta(meta: List<Meta>) {
-        metaFile.writeText(meta.joinToString("\n") { "${it.id}|||${it.originalName}|||${it.encName}|||${it.mime}" })
+    private fun saveMeta(list: List<Meta>) {
+        metaFile.writeText(list.joinToString("\n") {
+            "${it.id}|||${it.originalName}|||${it.encName}|||${it.mime}|||${it.folderId ?: ""}"
+        })
     }
 
-    override suspend fun addFile(uri: Uri, originalName: String, mimeType: String): Result<Unit> =
+    override suspend fun getFiles() = withContext(Dispatchers.IO) {
+        mutex.withLock { loadMeta().map { VaultFile(it.id, it.originalName, it.encName, it.mime, it.folderId) } }
+    }
+
+    override suspend fun addFile(uri: Uri, originalName: String, mimeType: String, folderId: String?) =
         withContext(Dispatchers.IO) {
             mutex.withLock {
                 try {
                     val encName = "${System.currentTimeMillis()}.enc"
-                    val tempIn = File(context.cacheDir, "temp_in_${System.nanoTime()}").apply { createNewFile() }
-                    val encFile = File(vaultDir, encName)
-
-                    context.contentResolver.openInputStream(uri)?.use { it.copyTo(tempIn.outputStream()) }
-                        ?: throw IllegalStateException("Cannot read URI")
-                    crypto.encrypt(tempIn, encFile)
+                    val tempIn = File(context.cacheDir, "vault_temp_in_${System.nanoTime()}")
+                    context.contentResolver.openInputStream(uri)?.use { ins -> tempIn.outputStream().use { out -> ins.copyTo(out) } }
+                        ?: return@withLock Result.failure<Unit>(Exception("Cannot open file"))
+                    crypto.encrypt(tempIn, File(vaultDir, encName))
                     tempIn.delete()
-
-                    val id = System.currentTimeMillis().toString()
-                    val current = loadMeta()
-                    current.add(Meta(id, originalName, encName, mimeType))
-                    saveMeta(current)
+                    val list = loadMeta()
+                    list.add(Meta(System.currentTimeMillis().toString(), originalName, encName, mimeType, folderId))
+                    saveMeta(list)
                     Result.success(Unit)
-                } catch (e: Exception) {
-                    Result.failure(e)
-                }
+                } catch (e: Exception) { Result.failure(e) }
             }
         }
 
-    override suspend fun getFiles(): List<VaultFile> = withContext(Dispatchers.IO) {
+    override suspend fun addFileWithId(uri: Uri, originalName: String, mimeType: String, folderId: String?) =
+        withContext(Dispatchers.IO) {
+            mutex.withLock {
+                try {
+                    val id = System.currentTimeMillis().toString()
+                    val encName = "${System.currentTimeMillis()}.enc"
+                    val tempIn = File(context.cacheDir, "vault_temp_in_${System.nanoTime()}")
+                    context.contentResolver.openInputStream(uri)?.use { ins -> tempIn.outputStream().use { out -> ins.copyTo(out) } }
+                        ?: return@withLock Result.failure<String>(Exception("Cannot open file"))
+                    crypto.encrypt(tempIn, File(vaultDir, encName))
+                    tempIn.delete()
+                    val list = loadMeta()
+                    list.add(Meta(id, originalName, encName, mimeType, folderId))
+                    saveMeta(list)
+                    Result.success(id)
+                } catch (e: Exception) { Result.failure(e) }
+            }
+        }
+
+    override suspend fun deleteFile(fileId: String) = withContext(Dispatchers.IO) {
         mutex.withLock {
-            loadMeta().map { VaultFile(it.id, it.originalName, it.encName, it.mime) }
+            try {
+                val list = loadMeta()
+                val f = list.find { it.id == fileId } ?: return@withLock Result.failure<Unit>(Exception("Not found"))
+                list.remove(f)
+                saveMeta(list)
+                File(vaultDir, f.encName).delete()
+                Result.success(Unit)
+            } catch (e: Exception) { Result.failure(e) }
         }
     }
 
-    override suspend fun decryptToTempFile(encryptedFileName: String): File? =
-        withContext(Dispatchers.IO) {
-            try {
-                val encFile = File(vaultDir, encryptedFileName)
-                if (!encFile.exists()) return@withContext null
-                val tempOut = File(context.cacheDir, "temp_dec_${System.nanoTime()}").apply { createNewFile() }
-                crypto.decrypt(encFile, tempOut)
-                tempOut
-            } catch (e: Exception) {
-                null
-            }
-        }
+    override suspend fun decryptToTempFile(encryptedFileName: String) = withContext(Dispatchers.IO) {
+        try {
+            val enc = File(vaultDir, encryptedFileName)
+            if (!enc.exists()) null
+            else File(context.cacheDir, "vault_temp_out_${System.nanoTime()}").also { crypto.decrypt(enc, it) }
+        } catch (e: Exception) { null }
+    }
 
-    override suspend fun deleteFile(fileId: String): Result<Unit> = withContext(Dispatchers.IO) {
+    override suspend fun moveFilesToFolder(fromFolderId: String, toFolderId: String?) = withContext(Dispatchers.IO) {
         mutex.withLock {
             try {
-                val current = loadMeta()
-                val fileToDelete = current.find { it.id == fileId } ?: return@withLock Result.failure(Exception("File not found"))
-            
-                // Удаляем из списка
-                current.remove(fileToDelete)
-                saveMeta(current)
-            
-                // Удаляем физический зашифрованный файл
-                val encFile = File(vaultDir, fileToDelete.encName)
-                if (encFile.exists()) encFile.delete()
-            
+                val list = loadMeta()
+                list.forEachIndexed { i, m -> if (m.folderId == fromFolderId) list[i] = m.copy(folderId = toFolderId) }
+                saveMeta(list)
                 Result.success(Unit)
-            } catch (e: Exception) {
-                Result.failure(e)
-            }
+            } catch (e: Exception) { Result.failure(e) }
+        }
+    }
+
+    override suspend fun moveFileToFolder(fileId: String, targetFolderId: String?) = withContext(Dispatchers.IO) {
+        mutex.withLock {
+            try {
+                val list = loadMeta()
+                val index = list.indexOfFirst { it.id == fileId }
+                if (index < 0) return@withLock Result.failure<Unit>(Exception("File not found"))
+                list[index] = list[index].copy(folderId = targetFolderId)
+                saveMeta(list)
+                Result.success(Unit)
+            } catch (e: Exception) { Result.failure(e) }
         }
     }
 }
