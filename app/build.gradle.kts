@@ -77,5 +77,17 @@ dependencies {
     implementation("androidx.security:security-crypto:1.1.0-alpha06")
     implementation("org.osmdroid:osmdroid-android:6.1.18")
     implementation("io.coil-kt:coil-compose:2.5.0")
+
+    // OSMBonusPack для онлайн-роутинга
     implementation("com.github.MKergall:osmbonuspack:6.9.0")
+
+    // MapLibre GL Native для векторных карт
+    implementation("org.maplibre.gl:android-sdk:11.5.0")
+
+    // Annotation plugin для маркеров в MapLibre
+    implementation("org.maplibre.gl:android-plugin-annotation-v9:3.0.0")
+
+    // GraphHopper для оффлайн-роутинга
+    implementation("com.graphhopper:graphhopper-core:9.1")
+    implementation("org.slf4j:slf4j-simple:2.0.9")
 }

@@ -18,10 +18,10 @@ import android.location.Location
 import android.location.LocationListener
 import android.location.LocationManager
 import android.os.Bundle
-import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
@@ -38,6 +38,8 @@ import com.google.android.calculator.di.AppContainer
 import com.google.android.calculator.domain.model.SavedLocation
 import com.google.android.calculator.utils.NetworkUtils
 import com.google.android.calculator.utils.OfflineMapUtils
+import com.google.android.calculator.utils.OfflineRegions
+import com.google.android.calculator.utils.RoutingManager
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -45,16 +47,11 @@ import kotlinx.coroutines.withContext
 import org.osmdroid.bonuspack.routing.OSRMRoadManager
 import org.osmdroid.bonuspack.routing.Road
 import org.osmdroid.tileprovider.tilesource.TileSourceFactory
-import org.osmdroid.util.BoundingBox
 import org.osmdroid.util.GeoPoint
 import org.osmdroid.views.MapView
 import org.osmdroid.views.overlay.Marker
 import org.osmdroid.views.overlay.Polyline
 import java.io.File
-import java.io.FileOutputStream
-import java.net.URL
-import java.util.zip.ZipEntry
-import java.util.zip.ZipOutputStream
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -76,8 +73,7 @@ fun MapScreen(
     var mapViewRef by remember { mutableStateOf<MapView?>(null) }
     var userMarkerRef by remember { mutableStateOf<Marker?>(null) }
     var targetMarkerRef by remember { mutableStateOf<Marker?>(null) }
-    var showDownloadDialog by remember { mutableStateOf(false) }
-    var downloadProgress by remember { mutableStateOf<Float?>(null) }
+    var hasCenteredOnUser by remember { mutableStateOf(false) }
     var road by remember { mutableStateOf<Road?>(null) }
     var isLoadingRoute by remember { mutableStateOf(false) }
     var isRouteOnline by remember { mutableStateOf(true) }
@@ -101,19 +97,48 @@ fun MapScreen(
         offlineArchives = OfflineMapUtils.findOfflineArchives()
     }
 
-    // Гибридный роутинг: сохраняет маршрут при потере интернета
+    // Автоцентрировка на пользователе при первой фиксации позиции
+    LaunchedEffect(currentLocation) {
+        val loc = currentLocation
+        if (loc != null && !hasCenteredOnUser) {
+            mapViewRef?.controller?.setZoom(17.0)
+            mapViewRef?.controller?.setCenter(GeoPoint(loc.latitude, loc.longitude))
+            hasCenteredOnUser = true
+        }
+    }
+
+    // Гибридный роутинг: оффлайн через GraphHopper → онлайн через OSRM
     LaunchedEffect(target, offlineMode) {
         val t = target ?: return@LaunchedEffect
-        if (offlineMode) return@LaunchedEffect
+        if (offlineMode) {
+            isRouteOnline = false
+            return@LaunchedEffect
+        }
 
         while (true) {
-            if (NetworkUtils.isInternetAvailable(context)) {
-                isRouteOnline = true
-                val cur = currentLocation
-                if (cur != null) {
-                    isLoadingRoute = true
-                    val route = withContext(Dispatchers.IO) {
-                        try {
+            val cur = currentLocation
+            if (cur != null) {
+                isLoadingRoute = true
+                val route = withContext(Dispatchers.IO) {
+                    try {
+                        // Определяем регион для текущей позиции
+                        val region = OfflineRegions.findRegionForPoint(cur.latitude, cur.longitude)
+
+                        // Пробуем оффлайн-роутинг если граф доступен
+                        val offlinePath = if (region != null && RoutingManager.isGraphAvailable(context, region.id)) {
+                            RoutingManager.routeOffline(
+                                context, region.id,
+                                GeoPoint(cur.latitude, cur.longitude),
+                                GeoPoint(t.latitude, t.longitude)
+                            )
+                        } else null
+
+                        if (offlinePath != null) {
+                            isRouteOnline = false
+                            roadFromResponsePath(offlinePath)
+                        } else if (NetworkUtils.isInternetAvailable(context)) {
+                            // Fallback: онлайн через OSRM
+                            isRouteOnline = true
                             val roadManager = OSRMRoadManager(context, "calculator_vault_app")
                             roadManager.setMean(OSRMRoadManager.MEAN_BY_FOOT)
                             val wayPoints = arrayListOf(
@@ -121,13 +146,13 @@ fun MapScreen(
                                 GeoPoint(t.latitude, t.longitude)
                             )
                             roadManager.getRoad(wayPoints)
-                        } catch (e: Exception) { null }
-                    }
-                    if (route != null && route.mRouteHigh.isNotEmpty()) road = route
-                    isLoadingRoute = false
+                        } else {
+                            isRouteOnline = false
+                            null
+                        }
+                    } catch (e: Exception) { null }
                 }
-            } else {
-                isRouteOnline = false
+                if (route != null && route.mRouteHigh.isNotEmpty()) road = route
                 isLoadingRoute = false
             }
             delay(10000)
@@ -183,9 +208,6 @@ fun MapScreen(
                 title = { Text(target?.name ?: "Карта", maxLines = 1) },
                 navigationIcon = { IconButton(onClick = onBack) { @Suppress("DEPRECATION") Icon(Icons.Default.ArrowBack, "Назад") } },
                 actions = {
-                    IconButton(onClick = onOpenOfflineMaps) {
-                        Icon(Icons.Default.Map, "Оффлайн-карты")
-                    }
                     IconButton(onClick = { target?.let { onEditLocation(it.id) } }) {
                         Icon(Icons.Default.Edit, "Редактировать")
                     }
@@ -203,7 +225,13 @@ fun MapScreen(
                         setTileSource(TileSourceFactory.MAPNIK)
                         setMultiTouchControls(true)
                         controller.setZoom(16.0)
-                        target?.let { controller.setCenter(GeoPoint(it.latitude, it.longitude)) }
+
+                        // Центрируемся на цели, если позиция пользователя ещё не определена
+                        target?.let { t ->
+                            if (!hasCenteredOnUser) {
+                                controller.setCenter(GeoPoint(t.latitude, t.longitude))
+                            }
+                        }
 
                         // Маркер пользователя — стрелка, вращающаяся по компасу
                         if (hasLocationPermission) {
@@ -247,14 +275,13 @@ fun MapScreen(
 
                     val cur = currentLocation; val t = target
 
-                    // Удаляем только старые линии маршрута
                     mv.overlays.removeAll { it is Polyline }
 
                     if (cur != null && t != null) {
                         if (road != null) {
                             val smoothedPoints = smoothPoints(road!!.mRouteHigh)
 
-                            // 1. Тень/подложка
+                            // Тень/подложка
                             val shadowLine = Polyline()
                             shadowLine.setPoints(smoothedPoints)
                             shadowLine.outlinePaint.color = Color.argb(80, 0, 0, 0)
@@ -264,7 +291,7 @@ fun MapScreen(
                             shadowLine.outlinePaint.strokeJoin = Paint.Join.ROUND
                             shadowLine.outlinePaint.style = Paint.Style.STROKE
 
-                            // 2. Основная синяя линия
+                            // Основная синяя линия
                             val mainLine = Polyline()
                             mainLine.setPoints(smoothedPoints)
                             mainLine.outlinePaint.color = Color.BLUE
@@ -274,8 +301,7 @@ fun MapScreen(
                             mainLine.outlinePaint.strokeJoin = Paint.Join.ROUND
                             mainLine.outlinePaint.style = Paint.Style.STROKE
 
-                            // Добавляем в НАЧАЛО списка: маркеры остаются поверх линий.
-                            // Порядок снизу вверх: тень -> основная линия -> маркеры
+                            // В начало списка: маркеры остаются поверх линий
                             mv.overlays.add(0, mainLine)
                             mv.overlays.add(0, shadowLine)
                         } else {
@@ -300,6 +326,24 @@ fun MapScreen(
                 modifier = Modifier.fillMaxSize()
             )
 
+            // Кнопка центрирования на текущей позиции
+            FloatingActionButton(
+                onClick = {
+                    currentLocation?.let { loc ->
+                        mapViewRef?.controller?.animateTo(GeoPoint(loc.latitude, loc.longitude))
+                    }
+                },
+                modifier = Modifier
+                    .align(Alignment.BottomEnd)
+                    .navigationBarsPadding()
+                    .padding(end = 16.dp, bottom = 200.dp),
+                shape = CircleShape,
+                containerColor = MaterialTheme.colorScheme.primaryContainer,
+                contentColor = MaterialTheme.colorScheme.onPrimaryContainer
+            ) {
+                Icon(Icons.Default.MyLocation, "Моё местоположение")
+            }
+
             // Нижняя информационная панель
             Surface(
                 Modifier.align(Alignment.BottomCenter).navigationBarsPadding().padding(16.dp).fillMaxWidth(),
@@ -318,9 +362,12 @@ fun MapScreen(
                         Column(Modifier.weight(1f)) {
                             Text(
                                 when {
-                                    road != null -> formatRouteInfo(road!!)
+                                    road != null -> {
+                                        val modeLabel = if (isRouteOnline) "пешком • онлайн" else "пешком • оффлайн"
+                                        "${formatRouteInfo(road!!)} • $modeLabel"
+                                    }
                                     isLoadingRoute -> "Строим маршрут..."
-                                    !isRouteOnline -> {
+                                    !isRouteOnline && road == null -> {
                                         val d = distance?.let { formatDistance(it) } ?: "..."
                                         "$d по прямой • роутинг недоступен"
                                     }
@@ -348,16 +395,14 @@ fun MapScreen(
                         )
                         Spacer(Modifier.width(8.dp))
                         Text(
-                            if (offlineMode) "Оффлайн (${offlineArchives.size})" else "Онлайн",
+                            if (offlineMode) "Оффлайн-карты (${offlineArchives.size})" else "Онлайн-карты",
                             style = MaterialTheme.typography.bodyMedium,
                             modifier = Modifier.weight(1f)
                         )
-                        TextButton(onClick = { showDownloadDialog = true }) { Text("Скачать") }
+                        IconButton(onClick = onOpenOfflineMaps) {
+                            Icon(Icons.Default.Settings, "Управление картами", Modifier.size(20.dp))
+                        }
                         Switch(checked = offlineMode, onCheckedChange = { offlineMode = it })
-                    }
-                    if (offlineMode && offlineArchives.isEmpty()) {
-                        Text("Нет оффлайн-карт. Скачайте регион или добавьте файлы в:\n${OfflineMapUtils.getOfflineDir().absolutePath}",
-                            style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
                     }
                 }
             }
@@ -376,69 +421,7 @@ fun MapScreen(
                     }
                 }
             }
-
-            // Прогресс загрузки оффлайн-карт
-            downloadProgress?.let { progress ->
-                Surface(
-                    Modifier.align(Alignment.Center).padding(32.dp),
-                    tonalElevation = 8.dp,
-                    shape = MaterialTheme.shapes.medium
-                ) {
-                    Column(Modifier.padding(24.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-                        CircularProgressIndicator(modifier = Modifier.size(48.dp))
-                        Spacer(Modifier.height(16.dp))
-                        Text("Загрузка тайлов: ${(progress * 100).toInt()}%")
-                        Spacer(Modifier.height(8.dp))
-                        LinearProgressIndicator(
-                            progress = { progress },
-                            modifier = Modifier.fillMaxWidth()
-                        )
-                    }
-                }
-            }
         }
-    }
-
-    // Диалог скачивания оффлайн-карты
-    if (showDownloadDialog) {
-        AlertDialog(
-            onDismissRequest = { showDownloadDialog = false },
-            title = { Text("Скачать оффлайн-карту") },
-            text = {
-                val z = mapViewRef?.zoomLevelDouble?.toInt() ?: 16
-                Text("Будет скачан видимый регион для уровней зума ${(z - 1).coerceAtLeast(1)}–${(z + 2).coerceAtMost(19)}. Требуется интернет.")
-            },
-            confirmButton = {
-                TextButton(onClick = {
-                    showDownloadDialog = false
-                    val mv = mapViewRef ?: return@TextButton
-                    val bbox = mv.boundingBox
-                    val minZoom = (mv.zoomLevelDouble.toInt() - 1).coerceAtLeast(1)
-                    val maxZoom = (mv.zoomLevelDouble.toInt() + 2).coerceAtMost(19)
-                    scope.launch {
-                        downloadProgress = 0f
-                        try {
-                            withContext(Dispatchers.IO) {
-                                downloadRegionTiles(bbox, minZoom, maxZoom) { p ->
-                                    scope.launch { downloadProgress = p }
-                                }
-                            }
-                            offlineArchives = OfflineMapUtils.findOfflineArchives()
-                            withContext(Dispatchers.Main) {
-                                Toast.makeText(context, "✅ Оффлайн-карта сохранена", Toast.LENGTH_SHORT).show()
-                            }
-                        } catch (e: Exception) {
-                            withContext(Dispatchers.Main) {
-                                Toast.makeText(context, "❌ Ошибка: ${e.message}", Toast.LENGTH_SHORT).show()
-                            }
-                        } finally {
-                            downloadProgress = null
-                        }
-                    }
-                }) { Text("Скачать") }
-            },
-            dismissButton = { TextButton(onClick = { showDownloadDialog = false }) { Text("Отмена") } }
-        )
     }
 }
 
@@ -448,9 +431,9 @@ private fun formatRouteInfo(route: Road): String {
     val lengthKm = route.mLength
     val durationMin = (route.mDuration / 60).toInt()
     return if (lengthKm < 1) {
-        "${(lengthKm * 1000).toInt()} м • ${durationMin} мин пешком"
+        "${(lengthKm * 1000).toInt()} м • ${durationMin} мин"
     } else {
-        String.format("%.2f км • %d мин пешком", lengthKm, durationMin)
+        String.format("%.2f км • %d мин", lengthKm, durationMin)
     }
 }
 
@@ -483,6 +466,16 @@ private fun smoothPoints(points: List<GeoPoint>, iterations: Int = 2): List<GeoP
         result = smoothed
     }
     return result
+}
+
+// Конвертация маршрута GraphHopper в osmdroid Road
+private fun roadFromResponsePath(path: com.graphhopper.ResponsePath): Road {
+    val road = Road()
+    road.mLength = path.distance / 1000.0  // Double -> Double (метры в км)
+    road.mDuration = path.time / 1000.0    // long -> Double (мс в сек)
+    road.mRouteHigh = ArrayList(RoutingManager.pathToGeoPoints(path))
+    road.mStatus = Road.STATUS_OK
+    return road
 }
 
 // Стрелка пользователя (вращается по компасу)
@@ -556,60 +549,4 @@ private fun createTargetPinBitmap(context: Context): Bitmap {
     canvas.drawCircle(size / 2f, size / 3f, size / 10f, dotPaint)
 
     return bitmap
-}
-
-private suspend fun downloadRegionTiles(
-    bbox: BoundingBox,
-    minZoom: Int,
-    maxZoom: Int,
-    onProgress: (Float) -> Unit
-) {
-    val dir = OfflineMapUtils.getOfflineDir()
-    dir.mkdirs()
-    val zipFile = File(dir, "offline_region_${System.currentTimeMillis()}.zip")
-
-    var totalTiles = 0L
-    for (z in minZoom..maxZoom) {
-        val xRange = getXRange(bbox, z)
-        val yRange = getYRange(bbox, z)
-        totalTiles += (xRange.count().toLong() * yRange.count().toLong())
-    }
-
-    var downloaded = 0L
-
-    ZipOutputStream(FileOutputStream(zipFile)).use { zos ->
-        for (z in minZoom..maxZoom) {
-            val xRange = getXRange(bbox, z)
-            val yRange = getYRange(bbox, z)
-            for (x in xRange) {
-                for (y in yRange) {
-                    try {
-                        val url = "https://tile.openstreetmap.org/$z/$x/$y.png"
-                        val bytes = URL(url).readBytes()
-                        zos.putNextEntry(ZipEntry("$z/$x/$y.png"))
-                        zos.write(bytes)
-                        zos.closeEntry()
-                    } catch (e: Exception) { }
-                    downloaded++
-                    onProgress(downloaded.toFloat() / totalTiles.toFloat())
-                }
-            }
-        }
-    }
-}
-
-private fun getXRange(bbox: BoundingBox, zoom: Int): IntRange {
-    val n = 1 shl zoom
-    val xMin = ((bbox.lonWest + 180.0) / 360.0 * n).toInt().coerceIn(0, n - 1)
-    val xMax = ((bbox.lonEast + 180.0) / 360.0 * n).toInt().coerceIn(0, n - 1)
-    return minOf(xMin, xMax)..maxOf(xMin, xMax)
-}
-
-private fun getYRange(bbox: BoundingBox, zoom: Int): IntRange {
-    val n = 1 shl zoom
-    val latRadTop = Math.toRadians(bbox.latNorth)
-    val latRadBottom = Math.toRadians(bbox.latSouth)
-    val yTop = ((1.0 - (kotlin.math.ln(kotlin.math.tan(latRadTop) + 1.0 / kotlin.math.cos(latRadTop)) / Math.PI)) / 2.0 * n).toInt().coerceIn(0, n - 1)
-    val yBottom = ((1.0 - (kotlin.math.ln(kotlin.math.tan(latRadBottom) + 1.0 / kotlin.math.cos(latRadBottom)) / Math.PI)) / 2.0 * n).toInt().coerceIn(0, n - 1)
-    return minOf(yTop, yBottom)..maxOf(yTop, yBottom)
 }

@@ -9,17 +9,28 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
+import com.google.android.calculator.utils.MapDownloadManager
 import com.google.android.calculator.utils.OfflineMapInfo
 import com.google.android.calculator.utils.OfflineMapUtils
+import com.google.android.calculator.utils.OfflineRegion
+import com.google.android.calculator.utils.OfflineRegions
+import com.google.android.calculator.utils.RegionListManager
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun OfflineMapsScreen(
     onBack: () -> Unit
 ) {
+    val context = LocalContext.current
     var mapsInfo by remember { mutableStateOf<List<OfflineMapInfo>>(emptyList()) }
     var mapToDelete by remember { mutableStateOf<OfflineMapInfo?>(null) }
+    var regionToDownload by remember { mutableStateOf<OfflineRegion?>(null) }
+
+    val downloadState by MapDownloadManager.state.collectAsState()
+    val regions by RegionListManager.regions.collectAsState()
+    val isLoadingRegions by RegionListManager.isLoading.collectAsState()
 
     fun refreshMaps() {
         mapsInfo = OfflineMapUtils.getOfflineMapsInfo()
@@ -27,6 +38,7 @@ fun OfflineMapsScreen(
 
     LaunchedEffect(Unit) {
         refreshMaps()
+        RegionListManager.loadRegions(context)
     }
 
     Scaffold(
@@ -43,25 +55,121 @@ fun OfflineMapsScreen(
             )
         }
     ) { padding ->
-        if (mapsInfo.isEmpty()) {
-            Box(Modifier.fillMaxSize().padding(padding), contentAlignment = Alignment.Center) {
-                Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.padding(32.dp)) {
-                    Icon(Icons.Default.CloudOff, null, Modifier.size(64.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
-                    Spacer(Modifier.height(16.dp))
-                    Text("Нет загруженных карт", style = MaterialTheme.typography.titleMedium)
-                    Spacer(Modifier.height(8.dp))
+        LazyColumn(
+            Modifier.fillMaxSize().padding(padding).padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(16.dp)
+        ) {
+            if (downloadState.isDownloading) {
+                item {
+                    Card(Modifier.fillMaxWidth(), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer)) {
+                        Column(Modifier.padding(16.dp).fillMaxWidth()) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                CircularProgressIndicator(Modifier.size(24.dp), strokeWidth = 3.dp)
+                                Spacer(Modifier.width(12.dp))
+                                Column(Modifier.weight(1f)) {
+                                    val regionName = downloadState.regionId?.let {
+                                        regions.find { r -> r.id == it }?.name ?: OfflineRegions.getRegionById(it)?.name
+                                    } ?: "Регион"
+                                    Text("Загрузка: $regionName", style = MaterialTheme.typography.bodyLarge)
+                                    Text("${(downloadState.progress * 100).toInt()}%", style = MaterialTheme.typography.bodySmall)
+                                }
+                            }
+                            Spacer(Modifier.height(8.dp))
+                            LinearProgressIndicator(
+                                progress = { downloadState.progress },
+                                modifier = Modifier.fillMaxWidth()
+                            )
+                            Spacer(Modifier.height(8.dp))
+                            TextButton(onClick = { MapDownloadManager.cancelDownload() }) {
+                                Text("Отменить", color = MaterialTheme.colorScheme.error)
+                            }
+                        }
+                    }
+                }
+            }
+
+            if (downloadState.completed) {
+                item {
+                    Card(Modifier.fillMaxWidth(), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer)) {
+                        Row(Modifier.padding(16.dp).fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                            Icon(Icons.Default.CheckCircle, null, tint = MaterialTheme.colorScheme.primary)
+                            Spacer(Modifier.width(12.dp))
+                            Text("Карта загружена!", Modifier.weight(1f))
+                            TextButton(onClick = { MapDownloadManager.resetState(); refreshMaps() }) { Text("OK") }
+                        }
+                    }
+                }
+            }
+
+            downloadState.error?.let { error ->
+                item {
+                    Card(Modifier.fillMaxWidth(), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer)) {
+                        Row(Modifier.padding(16.dp).fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                            Icon(Icons.Default.Error, null, tint = MaterialTheme.colorScheme.error)
+                            Spacer(Modifier.width(12.dp))
+                            Text("Ошибка: $error", Modifier.weight(1f))
+                            TextButton(onClick = { MapDownloadManager.resetState() }) { Text("OK") }
+                        }
+                    }
+                }
+            }
+
+            item {
+                Text("Скачать карты по регионам", style = MaterialTheme.typography.titleMedium)
+            }
+
+            if (isLoadingRegions) {
+                item {
+                    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                        CircularProgressIndicator(Modifier.size(24.dp), strokeWidth = 3.dp)
+                        Spacer(Modifier.width(12.dp))
+                        Text("Загружаем список регионов...", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                }
+            }
+
+            items(regions) { region ->
+                val isDownloadingThis = downloadState.isDownloading && downloadState.regionId == region.id
+                Card(Modifier.fillMaxWidth()) {
+                    Row(
+                        Modifier.padding(16.dp).fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(Modifier.weight(1f)) {
+                            Text(region.name, style = MaterialTheme.typography.bodyLarge)
+                            Text(
+                                "~${region.approximateSizeMb} МБ • зум ${region.minZoom}-${region.maxZoom}",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        if (isDownloadingThis) {
+                            CircularProgressIndicator(Modifier.size(24.dp), strokeWidth = 3.dp)
+                        } else {
+                            IconButton(
+                                onClick = { regionToDownload = region },
+                                enabled = !downloadState.isDownloading
+                            ) {
+                                Icon(Icons.Default.Download, "Скачать", tint = MaterialTheme.colorScheme.primary)
+                            }
+                        }
+                    }
+                }
+            }
+
+            item {
+                Text("Загруженные карты", style = MaterialTheme.typography.titleMedium)
+            }
+
+            if (mapsInfo.isEmpty()) {
+                item {
                     Text(
-                        "Откройте карту точки и нажмите «Скачать», чтобы сохранить видимый регион для оффлайн-использования.",
+                        "Нет загруженных карт",
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
-            }
-        } else {
-            LazyColumn(
-                Modifier.fillMaxSize().padding(padding).padding(16.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
+            } else {
                 items(mapsInfo) { map ->
                     Card(Modifier.fillMaxWidth()) {
                         Row(
@@ -86,6 +194,23 @@ fun OfflineMapsScreen(
                 }
             }
         }
+    }
+
+    regionToDownload?.let { region ->
+        AlertDialog(
+            onDismissRequest = { regionToDownload = null },
+            title = { Text("Скачать карту?") },
+            text = { Text("«${region.name}» (~${region.approximateSizeMb} МБ). Загрузка займёт время и требует интернет.") },
+            confirmButton = {
+                TextButton(onClick = {
+                    MapDownloadManager.startDownload(context, region)
+                    regionToDownload = null
+                }) { Text("Скачать") }
+            },
+            dismissButton = {
+                TextButton(onClick = { regionToDownload = null }) { Text("Отмена") }
+            }
+        )
     }
 
     mapToDelete?.let { map ->
