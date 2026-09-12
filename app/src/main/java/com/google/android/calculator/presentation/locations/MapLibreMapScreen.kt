@@ -50,6 +50,7 @@ import org.maplibre.android.style.sources.GeoJsonSource
 import org.osmdroid.bonuspack.routing.OSRMRoadManager
 import org.osmdroid.bonuspack.routing.Road
 import org.osmdroid.util.GeoPoint
+const val DEF_ZOOM = 15.0
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -274,7 +275,7 @@ fun MapLibreMapScreen(
                             }
 
                             target?.let { t ->
-                                val zoom = if (isOfflineMode) 12.0 else 15.0
+                                val zoom = DEF_ZOOM //if (isOfflineMode) 12.0 else 15.0
                                 map.cameraPosition = CameraPosition.Builder()
                                     .target(LatLng(t.latitude, t.longitude))
                                     .zoom(zoom)
