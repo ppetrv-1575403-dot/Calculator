@@ -78,12 +78,16 @@ dependencies {
     implementation("org.osmdroid:osmdroid-android:6.1.18")
     implementation("io.coil-kt:coil-compose:2.5.0")
 
+    // Локальный HTTP-сервер для раздачи тайлов
+    implementation("org.nanohttpd:nanohttpd:2.3.1")
+
     // OSMBonusPack для онлайн-роутинга
     implementation("com.github.MKergall:osmbonuspack:6.9.0")
 
     // MapLibre GL Native для векторных карт
-    implementation("org.maplibre.gl:android-sdk:11.5.0")
-
+    //implementation("org.maplibre.gl:android-sdk:11.5.0")
+    implementation("org.maplibre.gl:android-sdk:11.7.0")
+    
     // Annotation plugin для маркеров в MapLibre
     implementation("org.maplibre.gl:android-plugin-annotation-v9:3.0.0")
 

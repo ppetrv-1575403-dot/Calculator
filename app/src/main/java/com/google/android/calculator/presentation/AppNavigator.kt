@@ -14,6 +14,7 @@ import com.google.android.calculator.presentation.calculator.CalculatorScreen
 import com.google.android.calculator.presentation.filepicker.FilePickerScreen
 import com.google.android.calculator.presentation.locations.AddLocationScreen
 import com.google.android.calculator.presentation.locations.MapScreen
+import com.google.android.calculator.presentation.locations.MapLibreMapScreen
 import com.google.android.calculator.presentation.locations.OfflineMapsScreen
 import com.google.android.calculator.presentation.preview.PreviewScreen
 import com.google.android.calculator.presentation.setup.SetupPinScreen
@@ -98,11 +99,25 @@ fun AppNavigator(appContainer: AppContainer, mainActivity: MainActivity) {
             )
         }
 
-        composable(
+        /*composable(
             route = "map/{locationId}",
             arguments = listOf(navArgument("locationId") { type = NavType.StringType })
         ) { entry ->
             MapScreen(
+                appContainer = appContainer,
+                locationId = entry.arguments?.getString("locationId") ?: "",
+                onBack = { navController.popBackStack() },
+                onOpenPhoto = { id -> navController.navigate("preview/$id") },
+                onEditLocation = { id -> navController.navigate("add_location/root?editId=$id") },
+                onOpenOfflineMaps = { navController.navigate("offline_maps") }
+            )
+        }*/
+
+        composable(
+            route = "map/{locationId}",
+            arguments = listOf(navArgument("locationId") { type = NavType.StringType })
+        ) { entry ->
+            MapLibreMapScreen(
                 appContainer = appContainer,
                 locationId = entry.arguments?.getString("locationId") ?: "",
                 onBack = { navController.popBackStack() },

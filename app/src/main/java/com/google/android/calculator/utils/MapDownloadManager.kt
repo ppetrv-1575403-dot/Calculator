@@ -1,25 +1,24 @@
 package com.google.android.calculator.utils
 
 import android.content.Context
+import android.os.Handler
+import android.os.Looper
 import android.util.Log
+import android.widget.Toast
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
-import org.osmdroid.util.BoundingBox
 import java.io.File
 import java.io.FileOutputStream
+import java.net.HttpURLConnection
 import java.net.URL
-import java.util.zip.ZipEntry
-import java.util.zip.ZipInputStream
-import java.util.zip.ZipOutputStream
 
 data class DownloadState(
     val regionId: String? = null,
     val progress: Float = 0f,
     val isDownloading: Boolean = false,
     val error: String? = null,
-    val completed: Boolean = false,
-    val stage: String = "" // "tiles" | "graph" | ""
+    val completed: Boolean = false
 )
 
 object MapDownloadManager {
@@ -28,46 +27,49 @@ object MapDownloadManager {
     val state: StateFlow<DownloadState> = _state
 
     private var downloadJob: Job? = null
+    private val mainHandler = Handler(Looper.getMainLooper())
+
+    private fun toast(context: Context, message: String, long: Boolean = false) {
+        mainHandler.post {
+            Toast.makeText(context, message, if (long) Toast.LENGTH_LONG else Toast.LENGTH_SHORT).show()
+        }
+    }
 
     fun startDownload(context: Context, region: OfflineRegion) {
-        if (_state.value.isDownloading) return
+        if (_state.value.isDownloading) {
+            toast(context, "⚠️ Загрузка уже идёт")
+            return
+        }
+
+        // Проверяем, есть ли ссылка на векторные тайлы
+        val tilesUrl = region.vectorTilesUrl.takeIf { it.isNotBlank() }
+        if (tilesUrl == null) {
+            toast(context, "❌ Для региона «${region.name}» не настроена ссылка на карту")
+            return
+        }
+
+        toast(context, "🚀 Начинаем загрузку: ${region.name}")
 
         downloadJob = CoroutineScope(Dispatchers.IO + SupervisorJob()).launch {
             _state.value = DownloadState(regionId = region.id, isDownloading = true)
             try {
-                // Этап 1: Тайлы карты
-                _state.value = DownloadState(
-                    regionId = region.id, progress = 0f,
-                    isDownloading = true, stage = "tiles"
-                )
-                downloadRegionTiles(region) { progress ->
+                downloadPmtiles(context, region, tilesUrl) { progress ->
                     _state.value = DownloadState(
-                        regionId = region.id, progress = progress * 0.5f,
-                        isDownloading = true, stage = "tiles"
+                        regionId = region.id,
+                        progress = progress,
+                        isDownloading = true
                     )
                 }
-
-                // Этап 2: Граф дорог (если указан URL)
-                if (region.graphHopperUrl.isNotBlank()) {
-                    _state.value = DownloadState(
-                        regionId = region.id, progress = 0.5f,
-                        isDownloading = true, stage = "graph"
-                    )
-                    downloadGraphHopperData(context, region) { progress ->
-                        _state.value = DownloadState(
-                            regionId = region.id,
-                            progress = 0.5f + progress * 0.5f,
-                            isDownloading = true, stage = "graph"
-                        )
-                    }
-                }
-
                 _state.value = DownloadState(completed = true)
+                toast(context, "✅ Карта «${region.name}» загружена!", true)
             } catch (e: CancellationException) {
+                _state.value = DownloadState()
+                toast(context, "⏹️ Загрузка отменена")
                 throw e
             } catch (e: Exception) {
                 Log.e(TAG, "Download failed", e)
                 _state.value = DownloadState(error = e.message)
+                toast(context, "❌ Ошибка: ${e.message}", true)
             }
         }
     }
@@ -81,146 +83,86 @@ object MapDownloadManager {
         _state.value = DownloadState()
     }
 
-    private suspend fun downloadRegionTiles(
-        region: OfflineRegion,
-        onProgress: (Float) -> Unit
-    ) {
-        val bbox = region.boundingBox
-        val minZoom = region.minZoom
-        val maxZoom = region.maxZoom
-
-        val dir = OfflineMapUtils.getOfflineDir()
-        dir.mkdirs()
-        val zipFile = File(dir, "${region.id}_${System.currentTimeMillis()}.zip")
-
-        var totalTiles = 0L
-        for (z in minZoom..maxZoom) {
-            val xRange = getXRange(bbox, z)
-            val yRange = getYRange(bbox, z)
-            totalTiles += (xRange.count().toLong() * yRange.count().toLong())
-        }
-
-        if (totalTiles == 0L) return
-
-        var downloaded = 0L
-
-        ZipOutputStream(FileOutputStream(zipFile)).use { zos ->
-            for (z in minZoom..maxZoom) {
-                val xRange = getXRange(bbox, z)
-                val yRange = getYRange(bbox, z)
-                for (x in xRange) {
-                    for (y in yRange) {
-                        yield()
-                        try {
-                            val url = "https://tile.openstreetmap.org/$z/$x/$y.png"
-                            val bytes = URL(url).readBytes()
-                            zos.putNextEntry(ZipEntry("$z/$x/$y.png"))
-                            zos.write(bytes)
-                            zos.closeEntry()
-                        } catch (e: Exception) {
-                            Log.w(TAG, "Failed tile $z/$x/$y: ${e.message}")
-                        }
-                        downloaded++
-                        onProgress(downloaded.toFloat() / totalTiles.toFloat())
-                    }
-                }
-            }
-        }
-    }
-
-    private suspend fun downloadGraphHopperData(
+    /**
+     * Скачивает один .pmtiles файл по ссылке.
+     */
+    private suspend fun downloadPmtiles(
         context: Context,
         region: OfflineRegion,
+        url: String,
         onProgress: (Float) -> Unit
-    ) = withContext(Dispatchers.IO) {
-        try {
-            val url = URL(region.graphHopperUrl)
-            val connection = url.openConnection()
-            val totalSize = connection.contentLengthLong
-            val tempFile = File(context.cacheDir, "${region.id}_graph.ghz.tmp")
-            
-            var downloaded = 0L
-            url.openStream().use { input ->
+    ) {
+        // Целевой файл
+        val targetFile = VectorTileUtils.getPmtilesFile(context, region.id)
+        targetFile.parentFile?.mkdirs()
+        val tempFile = File(targetFile.parentFile, "${region.id}.pmtiles.tmp")
+
+        toast(context, "🌐 Подключаемся к серверу...")
+
+        val connection = withContext(Dispatchers.IO) {
+            val conn = URL(url).openConnection() as HttpURLConnection
+            conn.connectTimeout = 30000
+            conn.readTimeout = 30000
+            conn.instanceFollowRedirects = true
+            conn.setRequestProperty("User-Agent", "calculator_vault_app")
+            conn.connect()
+            conn
+        }
+
+        val responseCode = connection.responseCode
+        if (responseCode != 200) {
+            connection.disconnect()
+            throw Exception("Сервер вернул код $responseCode")
+        }
+
+        val totalSize = connection.contentLengthLong
+        val sizeMb = if (totalSize > 0) totalSize / 1024 / 1024 else 0
+        toast(context, "📦 Размер файла: ${if (sizeMb > 0) "$sizeMb МБ" else "неизвестен"}")
+
+        var downloaded = 0L
+        var lastToastPercent = 0
+
+        withContext(Dispatchers.IO) {
+            connection.inputStream.use { input ->
                 FileOutputStream(tempFile).use { output ->
-                    val buffer = ByteArray(8192)
+                    val buffer = ByteArray(64 * 1024)
                     var read: Int
                     while (input.read(buffer).also { read = it } != -1) {
                         yield()
                         output.write(buffer, 0, read)
                         downloaded += read
-                        if (totalSize > 0) {
-                            onProgress(downloaded.toFloat() / totalSize.toFloat())
+
+                        val progress = if (totalSize > 0) downloaded.toFloat() / totalSize.toFloat() else 0f
+                        onProgress(progress)
+
+                        // Тост каждые 10%
+                        val percent = (progress * 100).toInt()
+                        if (percent >= lastToastPercent + 10) {
+                            lastToastPercent = percent
+                            val downloadedMb = downloaded / 1024 / 1024
+                            mainHandler.post {
+                                Toast.makeText(context, "📥 $percent% (${downloadedMb} МБ)", Toast.LENGTH_SHORT).show()
+                            }
                         }
                     }
+                    output.flush()
                 }
             }
+        }
 
-            // Распаковываем ZIP в директорию графа
-            val graphDir = RoutingManager.getGraphDirPath(context).let {
-                File(it, region.id)
-            }
-            graphDir.mkdirs()
-            
-            if (tempFile.extension == "zip" || isZipFile(tempFile)) {
-                unpackZip(tempFile, graphDir)
-            } else {
-                // Если это не ZIP, просто копируем как есть
-                tempFile.renameTo(File(graphDir, "${region.id}.ghz"))
-            }
-            
+        connection.disconnect()
+
+        // Проверяем что скачалось что-то валидное
+        if (tempFile.length() < 1024) {
             tempFile.delete()
-            onProgress(1f)
-        } catch (e: CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            Log.e(TAG, "Graph download failed", e)
-            throw e
+            throw Exception("Файл слишком мал или повреждён")
         }
-    }
 
-    private fun isZipFile(file: File): Boolean {
-        return try {
-            file.inputStream().use { input ->
-                val magic = ByteArray(4)
-                if (input.read(magic) != 4) return@use false
-                magic[0] == 0x50.toByte() && magic[1] == 0x4B.toByte()
-            }
-        } catch (e: Exception) {
-            false
-        }
-    }
+        // Переименовываем временный файл в целевой
+        if (targetFile.exists()) targetFile.delete()
+        tempFile.renameTo(targetFile)
 
-    private fun unpackZip(zipFile: File, targetDir: File) {
-        ZipInputStream(zipFile.inputStream()).use { zis ->
-            var entry: ZipEntry?
-            while (zis.nextEntry.also { entry = it } != null) {
-                val outFile = File(targetDir, entry!!.name)
-                if (entry!!.isDirectory) {
-                    outFile.mkdirs()
-                } else {
-                    outFile.parentFile?.mkdirs()
-                    FileOutputStream(outFile).use { fos ->
-                        zis.copyTo(fos)
-                    }
-                }
-                zis.closeEntry()
-            }
-        }
-    }
-
-    private fun getXRange(bbox: BoundingBox, zoom: Int): IntRange {
-        val n = 1 shl zoom
-        val xMin = ((bbox.lonWest + 180.0) / 360.0 * n).toInt().coerceIn(0, n - 1)
-        val xMax = ((bbox.lonEast + 180.0) / 360.0 * n).toInt().coerceIn(0, n - 1)
-        return minOf(xMin, xMax)..maxOf(xMin, xMax)
-    }
-
-    private fun getYRange(bbox: BoundingBox, zoom: Int): IntRange {
-        val n = 1 shl zoom
-        val latRadTop = Math.toRadians(bbox.latNorth)
-        val latRadBottom = Math.toRadians(bbox.latSouth)
-        val yTop = ((1.0 - (kotlin.math.ln(kotlin.math.tan(latRadTop) + 1.0 / kotlin.math.cos(latRadTop)) / Math.PI)) / 2.0 * n).toInt().coerceIn(0, n - 1)
-        val yBottom = ((1.0 - (kotlin.math.ln(kotlin.math.tan(latRadBottom) + 1.0 / kotlin.math.cos(latRadBottom)) / Math.PI)) / 2.0 * n).toInt().coerceIn(0, n - 1)
-        return minOf(yTop, yBottom)..maxOf(yTop, yBottom)
+        val finalMb = targetFile.length() / 1024 / 1024
+        toast(context, "💾 Сохранено: ${targetFile.name} ($finalMb МБ)")
     }
 }

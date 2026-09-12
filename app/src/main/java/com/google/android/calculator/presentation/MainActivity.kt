@@ -25,6 +25,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
+import org.maplibre.android.MapLibre
 
 class MainActivity : ComponentActivity() {
 
@@ -70,6 +71,9 @@ class MainActivity : ComponentActivity() {
             registerReceiver(screenOffReceiver, filter)
         }
 
+        // Инициализация MapLibre
+        MapLibre.getInstance(this)
+    
         setContent {
             VaultTheme {
                 Surface(
