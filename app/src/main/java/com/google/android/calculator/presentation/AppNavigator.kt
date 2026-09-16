@@ -8,7 +8,7 @@ import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
-import com.google.android.calculator.MainActivity
+import com.google.android.calculator.presentation.MainActivity
 import com.google.android.calculator.di.AppContainer
 import com.google.android.calculator.presentation.calculator.CalculatorScreen
 import com.google.android.calculator.presentation.filepicker.FilePickerScreen

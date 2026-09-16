@@ -1,6 +1,7 @@
 package com.google.android.calculator.utils
 
 import org.osmdroid.util.BoundingBox
+import com.google.android.calculator.utils.Constants
 
 data class OfflineRegion(
     val id: String,
@@ -14,10 +15,9 @@ data class OfflineRegion(
     val vectorTilesSizeMb: Int = 0
 )
 
-const val githubUserName = "ppetrv-1575403-dot"
-const val vectorTilesUrlPrefix = "https://github.com/$githubUserName/map-tiles/releases/download/maps"
-
 object OfflineRegions {
+    
+    val vectorTilesUrlPrefix = "https://github.com/${Constants.githubUserName}/map-tiles/releases/download/maps"
 
     /**
      * Возвращает URL .mbtiles файла для региона.
@@ -28,7 +28,7 @@ object OfflineRegions {
     }
 
     fun getMbtilesUrl(regionId: String): String {
-        return "https://github.com/$githubUserName/map-tiles/releases/download/maps/${regionId}.mbtiles"
+        return "https://github.com/${Constants.githubUserName}/map-tiles/releases/download/maps/${regionId}.mbtiles"
     }
     
     fun getRegions(): List<OfflineRegion> = listOf(

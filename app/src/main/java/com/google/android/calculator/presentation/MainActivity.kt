@@ -1,4 +1,4 @@
-package com.google.android.calculator
+package com.google.android.calculator.presentation
 
 import android.content.BroadcastReceiver
 import android.content.Context
@@ -26,6 +26,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
 import org.maplibre.android.MapLibre
+import com.google.android.calculator.R
 
 class MainActivity : ComponentActivity() {
 
@@ -61,7 +62,9 @@ class MainActivity : ComponentActivity() {
         
         enableEdgeToEdge()
 
-        appContainer = AppContainer(applicationContext)
+        //appContainer = AppContainer(applicationContext)
+        appContainer = MyApplication.app?.appContainer as AppContainer
+        
         clearCacheUseCase = ClearCacheUseCase(applicationContext)
 
         val filter = IntentFilter(Intent.ACTION_SCREEN_OFF)

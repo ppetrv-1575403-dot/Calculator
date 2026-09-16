@@ -10,7 +10,9 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
@@ -27,6 +29,7 @@ import com.google.android.calculator.di.AppContainer
 import com.google.android.calculator.domain.model.SavedLocation
 import com.google.android.calculator.domain.model.VaultFile
 import com.google.android.calculator.domain.model.VaultFolder
+import com.google.android.calculator.utils.FileLogger
 import com.google.android.calculator.utils.PermissionUtils
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -51,6 +54,7 @@ fun VaultScreen(
     var fabExpanded by remember { mutableStateOf(false) }
     var showCreateFolderDialog by remember { mutableStateOf(false) }
     var folderName by remember { mutableStateOf("") }
+    var showLogsDialog by remember { mutableStateOf(false) }
 
     val hasStoragePermission = PermissionUtils.hasManageExternalStorage()
     val currentFolderId = viewModel.currentFolder?.id ?: ""
@@ -169,6 +173,11 @@ fun VaultScreen(
                 )
                 if (viewModel.itemToMove != null) {
                     TextButton(onClick = { viewModel.cancelMove() }) { Text("Отмена") }
+                } else {
+                    // Кнопка логов
+                    IconButton(onClick = { showLogsDialog = true }) {
+                        Icon(Icons.Default.Description, "Логи")
+                    }
                 }
             }
 
@@ -275,6 +284,61 @@ fun VaultScreen(
                 }) { Text("Создать") }
             },
             dismissButton = { TextButton(onClick = { showCreateFolderDialog = false }) { Text("Отмена") } }
+        )
+    }
+
+    // Диалог с логами
+    if (showLogsDialog) {
+        val logContent = remember { FileLogger.getLogContent(context) }
+        val crashContent = remember { FileLogger.getCrashContent(context) }
+        val scrollState = rememberScrollState()
+        
+        AlertDialog(
+            onDismissRequest = { showLogsDialog = false },
+            title = { Text("Логи приложения") },
+            text = {
+                Column {
+                    Text(
+                        "Путь: ${FileLogger.getLogFilePath(context)}",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(400.dp)
+                            .verticalScroll(scrollState)
+                    ) {
+                        if (crashContent.isNotEmpty() && crashContent != "Крашей не записано") {
+                            Text(
+                                "=== КРАШИ ===\n$crashContent\n",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.error
+                            )
+                        }
+                        Text(
+                            logContent,
+                            style = MaterialTheme.typography.bodySmall
+                        )
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { showLogsDialog = false }) { Text("Закрыть") }
+            },
+            dismissButton = {
+                TextButton(onClick = {
+                    val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
+                    val clip = android.content.ClipData.newPlainText(
+                        "Логи",
+                        "=== КРАШИ ===\n$crashContent\n\n=== ЛОГИ ===\n$logContent"
+                    )
+                    clipboard.setPrimaryClip(clip)
+                    android.widget.Toast.makeText(context, "Логи скопированы", android.widget.Toast.LENGTH_SHORT).show()
+                }) { Text("Копировать") }
+            }
         )
     }
 }
