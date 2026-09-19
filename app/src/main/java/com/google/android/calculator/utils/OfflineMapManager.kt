@@ -6,6 +6,9 @@ import android.os.Looper
 import android.util.Log
 import android.widget.Toast
 import kotlinx.coroutines.*
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import java.io.File
 import java.io.FileInputStream
 import java.io.FileOutputStream
@@ -24,6 +27,33 @@ object OfflineMapManager {
     private var currentServer: MbtilesTileServer? = null
     private var currentRegionId: String? = null
 
+    // === Состояние загрузки (сохраняется между переходами по экранам) ===
+    data class DownloadState(
+        val regionId: String? = null,
+        val regionName: String? = null,
+        val phase: String? = null, // "cards", "graph"
+        val progress: Float = 0f,
+        val error: String? = null,
+        val completed: Boolean = false
+    )
+
+    private val _downloadState = MutableStateFlow(DownloadState())
+    val downloadState: StateFlow<DownloadState> = _downloadState.asStateFlow()
+
+    fun isDownloading(): Boolean {
+        val state = _downloadState.value
+        return state.regionId != null && !state.completed && state.error == null
+    }
+
+    fun cancelDownload() {
+        FileLogger.i(TAG, "Download cancelled by user")
+        _downloadState.value = DownloadState()
+    }
+
+    fun resetDownloadState() {
+        _downloadState.value = DownloadState()
+    }
+
     private fun toast(context: Context, message: String, long: Boolean = false) {
         mainHandler.post {
             Toast.makeText(context, message, if (long) Toast.LENGTH_LONG else Toast.LENGTH_SHORT).show()
@@ -39,6 +69,18 @@ object OfflineMapManager {
         onComplete: () -> Unit,
         onError: (String) -> Unit
     ) {
+        if (isDownloading()) {
+            onError("Загрузка уже идёт")
+            return
+        }
+
+        _downloadState.value = DownloadState(
+            regionId = region.id,
+            regionName = region.name,
+            phase = "cards",
+            progress = 0f
+        )
+
         CoroutineScope(Dispatchers.IO).launch {
             try {
                 mainHandler.post { toast(context, "🌐 Начинаем загрузку карт: ${region.name}") }
@@ -50,7 +92,9 @@ object OfflineMapManager {
                 connection.instanceFollowRedirects = true
 
                 if (connection.responseCode != 200) {
-                    onError("Ошибка HTTP: ${connection.responseCode}")
+                    val error = "Ошибка HTTP: ${connection.responseCode}"
+                    _downloadState.value = _downloadState.value.copy(error = error)
+                    onError(error)
                     return@launch
                 }
 
@@ -69,6 +113,7 @@ object OfflineMapManager {
                             downloaded += read
                             if (totalSize > 0) {
                                 val progress = downloaded.toFloat() / totalSize.toFloat()
+                                _downloadState.value = _downloadState.value.copy(progress = progress)
                                 mainHandler.post { onProgress(progress) }
                             }
                         }
@@ -77,13 +122,16 @@ object OfflineMapManager {
 
                 if (tempFile.length() < 1024) {
                     tempFile.delete()
-                    onError("Файл слишком мал или повреждён")
+                    val error = "Файл слишком мал или повреждён"
+                    _downloadState.value = _downloadState.value.copy(error = error)
+                    onError(error)
                     return@launch
                 }
 
                 if (targetFile.exists()) targetFile.delete()
                 tempFile.renameTo(targetFile)
 
+                _downloadState.value = _downloadState.value.copy(progress = 1f)
                 mainHandler.post {
                     toast(context, "✅ Карты загружены: ${region.name}")
                     onComplete()
@@ -92,7 +140,9 @@ object OfflineMapManager {
                 throw e
             } catch (e: Exception) {
                 Log.e(TAG, "Download failed", e)
-                mainHandler.post { onError(e.message ?: "Неизвестная ошибка") }
+                val error = e.message ?: "Неизвестная ошибка"
+                _downloadState.value = _downloadState.value.copy(error = error)
+                mainHandler.post { onError(error) }
             }
         }
     }
@@ -224,6 +274,18 @@ object OfflineMapManager {
         onComplete: () -> Unit,
         onError: (String) -> Unit
     ) {
+        if (isDownloading()) {
+            onError("Загрузка уже идёт")
+            return
+        }
+
+        _downloadState.value = DownloadState(
+            regionId = region.id,
+            regionName = region.name,
+            phase = "graph",
+            progress = 0f
+        )
+
         CoroutineScope(Dispatchers.IO).launch {
             try {
                 mainHandler.post { toast(context, "🧭 Скачиваем граф дорог: ${region.name}") }
@@ -235,7 +297,9 @@ object OfflineMapManager {
                 connection.instanceFollowRedirects = true
 
                 if (connection.responseCode != 200) {
-                    onError("Ошибка HTTP: ${connection.responseCode}")
+                    val error = "Ошибка HTTP: ${connection.responseCode}"
+                    _downloadState.value = _downloadState.value.copy(error = error)
+                    onError(error)
                     return@launch
                 }
 
@@ -252,6 +316,7 @@ object OfflineMapManager {
                             downloaded += read
                             if (totalSize > 0) {
                                 val progress = downloaded.toFloat() / totalSize.toFloat()
+                                _downloadState.value = _downloadState.value.copy(progress = progress)
                                 mainHandler.post { onProgress(progress) }
                             }
                         }
@@ -267,7 +332,6 @@ object OfflineMapManager {
                 if (tempExtractDir.exists()) tempExtractDir.deleteRecursively()
                 tempExtractDir.mkdirs()
                 
-                // Распаковываем во временную папку
                 FileInputStream(tempFile).use { fis ->
                     ZipInputStream(fis).use { zis ->
                         var entry = zis.nextEntry
@@ -287,7 +351,6 @@ object OfflineMapManager {
                     }
                 }
                 
-                // Разворачиваем верхнюю папку, если она одна
                 val topLevel = tempExtractDir.listFiles()?.filter { it.isDirectory }
                 val sourceDir = if (topLevel != null && topLevel.size == 1 && 
                     (tempExtractDir.listFiles()?.size ?: 0) == 1) {
@@ -296,23 +359,24 @@ object OfflineMapManager {
                     tempExtractDir
                 }
                 
-                // Перемещаем файлы в целевую папку
                 sourceDir.copyRecursively(graphDir, overwrite = true)
                 
                 tempFile.delete()
                 tempExtractDir.deleteRecursively()
                 
-                // Диагностика
                 val files = graphDir.walkTopDown().filter { it.isFile }.toList()
                 Log.d(TAG, "Extracted ${files.size} files")
 
+                _downloadState.value = _downloadState.value.copy(progress = 1f)
                 mainHandler.post {
                     toast(context, "✅ Граф дорог загружен: ${region.name}")
                     onComplete()
                 }
             } catch (e: Exception) {
                 Log.e(TAG, "Graph download failed", e)
-                mainHandler.post { onError(e.message ?: "Неизвестная ошибка") }
+                val error = e.message ?: "Неизвестная ошибка"
+                _downloadState.value = _downloadState.value.copy(error = error)
+                mainHandler.post { onError(error) }
             }
         }
     }
@@ -320,12 +384,10 @@ object OfflineMapManager {
     // === Приватные методы ===
 
     private fun getMbtilesUrl(regionId: String): String {
-        // Замени на свой реальный логин и репозиторий!
         return Constants.getMbtilesUrl(regionId)
     }
 
     private fun getGraphUrl(regionId: String): String {
-        // Замени на свой реальный логин и репозиторий!
         return Constants.getGraphUrl(regionId)
     }
 }

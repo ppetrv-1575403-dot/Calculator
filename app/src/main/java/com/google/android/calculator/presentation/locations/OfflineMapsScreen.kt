@@ -33,11 +33,8 @@ fun OfflineMapsScreen(
     var regionToDelete by remember { mutableStateOf<DownloadedRegionInfo?>(null) }
     var showLogsDialog by remember { mutableStateOf(false) }
 
-    var downloadingRegionId by remember { mutableStateOf<String?>(null) }
-    var downloadPhase by remember { mutableStateOf<String?>(null) }
-    var downloadProgress by remember { mutableFloatStateOf(0f) }
-    var downloadError by remember { mutableStateOf<String?>(null) }
-    var downloadCompleted by remember { mutableStateOf(false) }
+    // Состояние загрузки из OfflineMapManager (сохраняется между переходами)
+    val downloadState by OfflineMapManager.downloadState.collectAsState()
 
     val regions = remember { OfflineRegions.getRegions() }
 
@@ -56,44 +53,37 @@ fun OfflineMapsScreen(
     }
 
     fun startSmartDownload(region: OfflineRegion, needCards: Boolean, needGraph: Boolean) {
-        val model = OfflineRegions.toOfflineRegionModel(region)
-        downloadingRegionId = region.id
-        downloadError = null
-        downloadCompleted = false
+        if (OfflineMapManager.isDownloading()) {
+            android.widget.Toast.makeText(context, "Загрузка уже идёт", android.widget.Toast.LENGTH_SHORT).show()
+            return
+        }
 
+        val model = OfflineRegions.toOfflineRegionModel(region)
         val totalTasks = (if (needCards) 1 else 0) + (if (needGraph) 1 else 0)
         var currentTask = 0
         val taskWeight = if (totalTasks > 0) 1f / totalTasks else 1f
 
         fun proceedToGraph() {
             if (!needGraph) {
-                downloadingRegionId = null
-                downloadPhase = null
-                downloadCompleted = true
+                OfflineMapManager.resetDownloadState()
                 refreshDownloaded()
                 return
             }
             currentTask++
-            downloadPhase = "graph"
             val baseProgress = (currentTask - 1) * taskWeight
-            downloadProgress = baseProgress
 
             OfflineMapManager.downloadGraph(
                 context = context,
                 region = model,
                 onProgress = { progress ->
-                    downloadProgress = baseProgress + progress * taskWeight
+                    // Прогресс обновляется автоматически через StateFlow
                 },
                 onComplete = {
-                    downloadingRegionId = null
-                    downloadPhase = null
-                    downloadCompleted = true
+                    OfflineMapManager.resetDownloadState()
                     refreshDownloaded()
                 },
                 onError = { error ->
-                    downloadingRegionId = null
-                    downloadPhase = null
-                    downloadError = "Ошибка загрузки графа: $error"
+                    // Ошибка уже установлена в StateFlow
                     refreshDownloaded()
                 }
             )
@@ -103,22 +93,18 @@ fun OfflineMapsScreen(
             proceedToGraph()
         } else {
             currentTask++
-            downloadPhase = "cards"
-            downloadProgress = 0f
 
             OfflineMapManager.downloadRegion(
                 context = context,
                 region = model,
                 onProgress = { progress ->
-                    downloadProgress = (currentTask - 1) * taskWeight + progress * taskWeight
+                    // Прогресс обновляется автоматически через StateFlow
                 },
                 onComplete = {
                     proceedToGraph()
                 },
                 onError = { error ->
-                    downloadingRegionId = null
-                    downloadPhase = null
-                    downloadError = "Ошибка загрузки карт: $error"
+                    // Ошибка уже установлена в StateFlow
                 }
             )
         }
@@ -147,7 +133,8 @@ fun OfflineMapsScreen(
             Modifier.fillMaxSize().padding(padding).padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
-            if (downloadingRegionId != null) {
+            // Индикатор загрузки — из OfflineMapManager
+            if (downloadState.regionId != null && !downloadState.completed && downloadState.error == null) {
                 item {
                     Card(
                         Modifier.fillMaxWidth(),
@@ -158,15 +145,17 @@ fun OfflineMapsScreen(
                                 CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
                                 Spacer(Modifier.width(12.dp))
                                 Column(Modifier.weight(1f)) {
-                                    val regionName = regions.find { it.id == downloadingRegionId }?.name ?: downloadingRegionId
-                                    val phaseText = when (downloadPhase) {
+                                    Text(
+                                        "«${downloadState.regionName ?: downloadState.regionId}»",
+                                        style = MaterialTheme.typography.bodyMedium
+                                    )
+                                    val phaseText = when (downloadState.phase) {
                                         "cards" -> "Загрузка карт..."
                                         "graph" -> "Загрузка графа дорог..."
                                         else -> "Подготовка..."
                                     }
-                                    Text("«$regionName»", style = MaterialTheme.typography.bodyMedium)
                                     Text(
-                                        "$phaseText ${(downloadProgress * 100).toInt()}%",
+                                        "$phaseText ${(downloadState.progress * 100).toInt()}%",
                                         style = MaterialTheme.typography.bodySmall,
                                         color = MaterialTheme.colorScheme.onSurfaceVariant
                                     )
@@ -174,15 +163,11 @@ fun OfflineMapsScreen(
                             }
                             Spacer(Modifier.height(8.dp))
                             LinearProgressIndicator(
-                                progress = { downloadProgress },
+                                progress = { downloadState.progress },
                                 modifier = Modifier.fillMaxWidth()
                             )
                             Spacer(Modifier.height(8.dp))
-                            TextButton(onClick = {
-                                downloadingRegionId = null
-                                downloadPhase = null
-                                downloadProgress = 0f
-                            }) {
+                            TextButton(onClick = { OfflineMapManager.cancelDownload() }) {
                                 Text("Отменить", color = MaterialTheme.colorScheme.error)
                             }
                         }
@@ -190,7 +175,8 @@ fun OfflineMapsScreen(
                 }
             }
 
-            if (downloadCompleted) {
+            // Завершение загрузки
+            if (downloadState.completed) {
                 item {
                     Card(
                         Modifier.fillMaxWidth(),
@@ -204,7 +190,7 @@ fun OfflineMapsScreen(
                             Spacer(Modifier.width(12.dp))
                             Text("Загрузка завершена!", Modifier.weight(1f), style = MaterialTheme.typography.bodyMedium)
                             TextButton(onClick = {
-                                downloadCompleted = false
+                                OfflineMapManager.resetDownloadState()
                                 refreshDownloaded()
                             }) { Text("OK") }
                         }
@@ -212,7 +198,8 @@ fun OfflineMapsScreen(
                 }
             }
 
-            downloadError?.let { error ->
+            // Ошибка загрузки
+            downloadState.error?.let { error ->
                 item {
                     Card(
                         Modifier.fillMaxWidth(),
@@ -231,7 +218,7 @@ fun OfflineMapsScreen(
                                 maxLines = 3,
                                 overflow = TextOverflow.Ellipsis
                             )
-                            TextButton(onClick = { downloadError = null }) { Text("OK") }
+                            TextButton(onClick = { OfflineMapManager.resetDownloadState() }) { Text("OK") }
                         }
                     }
                 }
@@ -242,7 +229,7 @@ fun OfflineMapsScreen(
             }
 
             items(regions) { region ->
-                val isDownloadingThis = downloadingRegionId == region.id
+                val isDownloadingThis = downloadState.regionId == region.id && !downloadState.completed && downloadState.error == null
                 val hasCards = downloadedRegions.any { it.regionId == region.id }
                 val hasGraph = OfflineMapManager.isGraphDownloaded(context, region.id)
                 
@@ -264,21 +251,13 @@ fun OfflineMapsScreen(
                                 )
                                 if (hasCards) {
                                     Spacer(Modifier.width(6.dp))
-                                    Icon(
-                                        Icons.Default.CheckCircle,
-                                        "Карты загружены",
-                                        tint = MaterialTheme.colorScheme.primary,
-                                        modifier = Modifier.size(16.dp)
-                                    )
+                                    Icon(Icons.Default.CheckCircle, "Карты загружены",
+                                        tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(16.dp))
                                 }
                                 if (hasGraph) {
                                     Spacer(Modifier.width(4.dp))
-                                    Icon(
-                                        Icons.Default.AltRoute,
-                                        "Граф дорог загружен",
-                                        tint = MaterialTheme.colorScheme.tertiary,
-                                        modifier = Modifier.size(16.dp)
-                                    )
+                                    Icon(Icons.Default.AltRoute, "Граф дорог загружен",
+                                        tint = MaterialTheme.colorScheme.tertiary, modifier = Modifier.size(16.dp))
                                 }
                             }
                             Text(
@@ -302,7 +281,7 @@ fun OfflineMapsScreen(
                             else -> {
                                 IconButton(
                                     onClick = { regionToDownload = region },
-                                    enabled = downloadingRegionId == null
+                                    enabled = !OfflineMapManager.isDownloading()
                                 ) {
                                     Icon(
                                         when {
@@ -335,15 +314,13 @@ fun OfflineMapsScreen(
 
             if (downloadedRegions.isEmpty() && regions.none { OfflineMapManager.isGraphDownloaded(context, it.id) }) {
                 item {
-                    Text(
-                        "Нет загруженных регионов",
+                    Text("Нет загруженных регионов",
                         style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
+                        color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
             } else {
                 val allRegions = regions.filter { region ->
-                    downloadedRegions.any { it.regionId == region.id } || 
+                    downloadedRegions.any { it.regionId == region.id } ||
                     OfflineMapManager.isGraphDownloaded(context, region.id)
                 }
                 
@@ -357,11 +334,9 @@ fun OfflineMapsScreen(
                             Modifier.padding(horizontal = 12.dp, vertical = 8.dp).fillMaxWidth(),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
-                            Icon(
-                                Icons.Default.Map, null,
+                            Icon(Icons.Default.Map, null,
                                 tint = if (cardsInfo != null) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
-                                modifier = Modifier.size(20.dp)
-                            )
+                                modifier = Modifier.size(20.dp))
                             Spacer(Modifier.width(12.dp))
                             Column(Modifier.weight(1f)) {
                                 Text(region.name, style = MaterialTheme.typography.bodyMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
@@ -378,11 +353,9 @@ fun OfflineMapsScreen(
                                     statusParts.add("Граф: нет")
                                 }
                                 
-                                Text(
-                                    statusParts.joinToString(" • "),
+                                Text(statusParts.joinToString(" • "),
                                     style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                                )
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant)
                             }
                             IconButton(onClick = { regionToDelete = DownloadedRegionInfo(region.id, region.name, 0) }) {
                                 Icon(Icons.Default.Delete, "Удалить", tint = MaterialTheme.colorScheme.error, modifier = Modifier.size(20.dp))
@@ -406,13 +379,11 @@ fun OfflineMapsScreen(
         AlertDialog(
             onDismissRequest = { regionToDownload = null },
             title = { 
-                Text(
-                    when {
-                        isComplete -> "Обновить регион?"
-                        isPartial -> "Дозагрузить регион?"
-                        else -> "Скачать регион?"
-                    }
-                ) 
+                Text(when {
+                    isComplete -> "Обновить регион?"
+                    isPartial -> "Дозагрузить регион?"
+                    else -> "Скачать регион?"
+                }) 
             },
             text = {
                 Column {
@@ -420,69 +391,47 @@ fun OfflineMapsScreen(
                     Spacer(Modifier.height(8.dp))
                     
                     if (isComplete) {
-                        Text(
-                            "Регион полностью загружен. Будут обновлены оба файла.",
+                        Text("Регион полностью загружен. Будут обновлены оба файла.",
                             style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
+                            color = MaterialTheme.colorScheme.onSurfaceVariant)
                     } else {
-                        Text(
-                            "Состояние:",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
+                        Text("Состояние:", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Icon(
                                 if (hasCards) Icons.Default.CheckCircle else Icons.Default.Close,
-                                null,
-                                Modifier.size(16.dp),
+                                null, Modifier.size(16.dp),
                                 tint = if (hasCards) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error
                             )
                             Spacer(Modifier.width(8.dp))
-                            Text(
-                                "Карты" + if (hasCards) " (есть)" else " (будут загружены)",
-                                style = MaterialTheme.typography.bodySmall
-                            )
+                            Text("Карты" + if (hasCards) " (есть)" else " (будут загружены)", style = MaterialTheme.typography.bodySmall)
                         }
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Icon(
                                 if (hasGraph) Icons.Default.CheckCircle else Icons.Default.Close,
-                                null,
-                                Modifier.size(16.dp),
+                                null, Modifier.size(16.dp),
                                 tint = if (hasGraph) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error
                             )
                             Spacer(Modifier.width(8.dp))
-                            Text(
-                                "Граф дорог" + if (hasGraph) " (есть)" else " (будет загружен)",
-                                style = MaterialTheme.typography.bodySmall
-                            )
+                            Text("Граф дорог" + if (hasGraph) " (есть)" else " (будет загружен)", style = MaterialTheme.typography.bodySmall)
                         }
                     }
                     
                     Spacer(Modifier.height(8.dp))
-                    Text(
-                        "Требуется интернет. Загрузка займёт время.",
+                    Text("Требуется интернет. Загрузка займёт время.",
                         style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
+                        color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
             },
             confirmButton = {
                 TextButton(onClick = {
-                    if (isComplete) {
-                        startSmartDownload(region, needCards = true, needGraph = true)
-                    } else {
-                        startSmartDownload(region, needCards = needCards, needGraph = needGraph)
-                    }
+                    startSmartDownload(region, needCards = needCards, needGraph = needGraph)
                     regionToDownload = null
                 }) { 
-                    Text(
-                        when {
-                            isComplete -> "Обновить всё"
-                            isPartial -> "Дозагрузить"
-                            else -> "Скачать"
-                        }
-                    ) 
+                    Text(when {
+                        isComplete -> "Обновить всё"
+                        isPartial -> "Дозагрузить"
+                        else -> "Скачать"
+                    }) 
                 }
             },
             dismissButton = {
@@ -499,11 +448,9 @@ fun OfflineMapsScreen(
                 Column {
                     Text("«${downloadedRegion.name}» будет удалена.")
                     Spacer(Modifier.height(4.dp))
-                    Text(
-                        "Удалятся карты и граф дорог (если есть).",
+                    Text("Удалятся карты и граф дорог (если есть).",
                         style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
+                        color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
             },
             confirmButton = {
@@ -516,20 +463,11 @@ fun OfflineMapsScreen(
                                 OfflineMapManager.deleteGraph(
                                     context = context,
                                     regionId = downloadedRegion.regionId,
-                                    onComplete = {
-                                        regionToDelete = null
-                                        refreshDownloaded()
-                                    },
-                                    onError = {
-                                        regionToDelete = null
-                                        refreshDownloaded()
-                                    }
+                                    onComplete = { regionToDelete = null; refreshDownloaded() },
+                                    onError = { regionToDelete = null; refreshDownloaded() }
                                 )
                             },
-                            onError = {
-                                regionToDelete = null
-                                refreshDownloaded()
-                            }
+                            onError = { regionToDelete = null; refreshDownloaded() }
                         )
                     },
                     colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.error)
@@ -541,7 +479,6 @@ fun OfflineMapsScreen(
         )
     }
 
-    // Диалог с логами
     if (showLogsDialog) {
         val logContent = remember { FileLogger.getLogContent(context) }
         val crashContent = remember { FileLogger.getCrashContent(context) }
@@ -552,11 +489,9 @@ fun OfflineMapsScreen(
             title = { Text("Логи приложения") },
             text = {
                 Column {
-                    Text(
-                        "Логи и краши:",
+                    Text("Логи и краши:",
                         style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
+                        color = MaterialTheme.colorScheme.onSurfaceVariant)
                     Spacer(Modifier.height(8.dp))
                     
                     Column(
@@ -566,16 +501,11 @@ fun OfflineMapsScreen(
                             .verticalScroll(scrollState)
                     ) {
                         if (crashContent.isNotEmpty() && crashContent != "Крашей не записано") {
-                            Text(
-                                "=== КРАШИ ===\n$crashContent\n",
+                            Text("=== КРАШИ ===\n$crashContent\n",
                                 style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.error
-                            )
+                                color = MaterialTheme.colorScheme.error)
                         }
-                        Text(
-                            logContent,
-                            style = MaterialTheme.typography.bodySmall
-                        )
+                        Text(logContent, style = MaterialTheme.typography.bodySmall)
                     }
                 }
             },
@@ -585,10 +515,7 @@ fun OfflineMapsScreen(
             dismissButton = {
                 TextButton(onClick = {
                     val clipboard = context.getSystemService(android.content.Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
-                    val clip = android.content.ClipData.newPlainText(
-                        "Логи",
-                        "=== КРАШИ ===\n$crashContent\n\n=== ЛОГИ ===\n$logContent"
-                    )
+                    val clip = android.content.ClipData.newPlainText("Логи", "=== КРАШИ ===\n$crashContent\n\n=== ЛОГИ ===\n$logContent")
                     clipboard.setPrimaryClip(clip)
                     android.widget.Toast.makeText(context, "Логи скопированы", android.widget.Toast.LENGTH_SHORT).show()
                 }) { Text("Копировать") }
