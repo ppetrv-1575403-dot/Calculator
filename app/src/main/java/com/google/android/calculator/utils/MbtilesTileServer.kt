@@ -9,6 +9,7 @@ import android.widget.Toast
 import fi.iki.elonen.NanoHTTPD
 import java.io.ByteArrayInputStream
 import java.io.File
+import java.util.zip.GZIPInputStream
 
 class MbtilesTileServer(
     private val context: Context,
@@ -17,7 +18,7 @@ class MbtilesTileServer(
 ) : NanoHTTPD(port) {
 
     private var db: SQLiteDatabase? = null
-    private var firstRequestShown = false
+    private var layerNamesLogged = false
     private val mainHandler = Handler(Looper.getMainLooper())
 
     companion object {
@@ -32,12 +33,18 @@ class MbtilesTileServer(
                 null,
                 SQLiteDatabase.OPEN_READONLY
             )
-            // Проверяем, есть ли таблица tiles
-            val cursor = db?.rawQuery("SELECT count(*) FROM tiles", null)
-            val tileCount = if (cursor?.moveToFirst() == true) cursor.getLong(0) else 0
-            cursor?.close()
 
-            // Читаем metadata для диагностики
+            val countCursor = db?.rawQuery("SELECT count(*) FROM tiles", null)
+            val tileCount = if (countCursor?.moveToFirst() == true) countCursor.getLong(0) else 0
+            countCursor?.close()
+
+            val minZCursor = db?.rawQuery("SELECT MIN(zoom_level) FROM tiles", null)
+            val maxZCursor = db?.rawQuery("SELECT MAX(zoom_level) FROM tiles", null)
+            val minZoom = if (minZCursor?.moveToFirst() == true) minZCursor.getInt(0) else -1
+            val maxZoom = if (maxZCursor?.moveToFirst() == true) maxZCursor.getInt(0) else -1
+            minZCursor?.close()
+            maxZCursor?.close()
+
             val formatCursor = db?.rawQuery("SELECT value FROM metadata WHERE name='format'", null)
             val format = if (formatCursor?.moveToFirst() == true) formatCursor.getString(0) else "unknown"
             formatCursor?.close()
@@ -46,19 +53,38 @@ class MbtilesTileServer(
             val type = if (typeCursor?.moveToFirst() == true) typeCursor.getString(0) else "unknown"
             typeCursor?.close()
 
-            Log.d(TAG, "✅ Database opened: $tileCount tiles, format=$format, type=$type")
+            val vlCursor = db?.rawQuery("SELECT value FROM metadata WHERE name='vector_layers'", null)
+            val vectorLayers = if (vlCursor?.moveToFirst() == true) vlCursor.getString(0) else "unknown"
+            vlCursor?.close()
+
+            val zoomsCursor = db?.rawQuery(
+                "SELECT zoom_level, count(*) FROM tiles GROUP BY zoom_level ORDER BY zoom_level",
+                null
+            )
+            val zoomDistribution = buildString {
+                while (zoomsCursor?.moveToNext() == true) {
+                    append("z${zoomsCursor.getInt(0)}:${zoomsCursor.getInt(1)} ")
+                }
+            }
+            zoomsCursor?.close()
+
+            FileLogger.i(TAG, "MBTiles: $tileCount тайлов, zoom $minZoom-$maxZoom, формат=$format")
+            FileLogger.i(TAG, "Zoom dist: $zoomDistribution")
+            FileLogger.i(TAG, "Vector layers metadata: $vectorLayers")
+
             mainHandler.post {
                 Toast.makeText(
                     context,
-                    "📦 База открыта: $tileCount тайлов\nФормат: $format, тип: $type",
+                    "📦 $tileCount тайлов, z=$minZoom-$maxZoom\nФормат: $format",
                     Toast.LENGTH_LONG
                 ).show()
             }
             return true
         } catch (e: Exception) {
             Log.e(TAG, "❌ Failed to open database", e)
+            FileLogger.e(TAG, "Failed to open database", e)
             mainHandler.post {
-                Toast.makeText(context, "❌ Ошибка открытия базы: ${e.message}", Toast.LENGTH_LONG).show()
+                Toast.makeText(context, "❌ Ошибка базы: ${e.message}", Toast.LENGTH_LONG).show()
             }
             return false
         }
@@ -66,16 +92,6 @@ class MbtilesTileServer(
 
     override fun serve(session: IHTTPSession): Response {
         val uri = session.uri
-        Log.d(TAG, "📥 Request: $uri")
-
-        // Показываем тост при первом запросе
-        if (!firstRequestShown) {
-            firstRequestShown = true
-            mainHandler.post {
-                Toast.makeText(context, "📥 Первый запрос к серверу: $uri", Toast.LENGTH_LONG).show()
-            }
-        }
-
         val parts = uri.trimStart('/').split("/")
         if (parts.size < 3) {
             return newFixedLengthResponse(Response.Status.NOT_FOUND, "text/plain", "Not found")
@@ -89,24 +105,37 @@ class MbtilesTileServer(
         val y = yStr.toIntOrNull()
             ?: return newFixedLengthResponse(Response.Status.NOT_FOUND, "text/plain", "Invalid y")
 
-        // MBTiles использует TMS-схему (Y перевёрнут)
         val tmsY = (1 shl z) - 1 - y
 
         return try {
             val data = getTile(z, x, tmsY)
             if (data == null) {
-                Log.d(TAG, "Tile not found: $z/$x/$tmsY")
                 newFixedLengthResponse(Response.Status.NOT_FOUND, "text/plain", "Tile not found")
             } else {
-                Log.d(TAG, "✅ Serving tile $z/$x/$tmsY (${data.size} bytes)")
+                // === ДИАГНОСТИКА: извлекаем реальные имена слоёв из PBF (один раз) ===
+                if (!layerNamesLogged && z >= 12) {
+                    layerNamesLogged = true
+                    try {
+                        val names = extractPbfLayerNames(data)
+                        FileLogger.i(TAG, "🧩 PBF layer names in tile z=$z x=$x: ${names.joinToString(", ")}")
+                    } catch (e: Exception) {
+                        FileLogger.e(TAG, "PBF parse failed", e)
+                    }
+                }
+
+                val encoding = when {
+                    data.size > 2 && data[0] == 0x1f.toByte() && data[1] == 0x8b.toByte() -> "gzip"
+                    data.size > 2 && data[0] == 0x78.toByte() -> "zlib"
+                    else -> "raw/pbf"
+                }
+
                 val response = newFixedLengthResponse(
                     Response.Status.OK,
-                    "application/x-protobuf",
+                    "application/vnd.mapbox-vector-tile",
                     ByteArrayInputStream(data),
                     data.size.toLong()
                 )
-                // Определяем сжатие по магическим байтам
-                if (data.size > 2 && data[0] == 0x1f.toByte() && data[1] == 0x8b.toByte()) {
+                if (encoding == "gzip") {
                     response.addHeader("Content-Encoding", "gzip")
                 }
                 response.addHeader("Access-Control-Allow-Origin", "*")
@@ -114,6 +143,7 @@ class MbtilesTileServer(
             }
         } catch (e: Exception) {
             Log.e(TAG, "❌ Error serving tile", e)
+            FileLogger.e(TAG, "Error serving tile", e)
             newFixedLengthResponse(Response.Status.INTERNAL_ERROR, "text/plain", e.message)
         }
     }
@@ -138,13 +168,90 @@ class MbtilesTileServer(
         }
     }
 
+    // === Мини-парсер PBF: извлекает имена слоёв из векторного тайла ===
+
+    private fun gunzip(data: ByteArray): ByteArray =
+        GZIPInputStream(ByteArrayInputStream(data)).readBytes()
+
+    private fun extractPbfLayerNames(data: ByteArray): List<String> {
+        val bytes = if (data.size > 2 && data[0] == 0x1f.toByte() && data[1] == 0x8b.toByte()) {
+            gunzip(data)
+        } else data
+        
+        val names = mutableListOf<String>()
+        var i = 0
+        while (i < bytes.size) {
+            val tagRes = readVarint(bytes, i) ?: break
+            i = tagRes.second
+            val field = (tagRes.first shr 3).toInt()
+            val wire = (tagRes.first and 7).toInt()
+            when (wire) {
+                0 -> { val r = readVarint(bytes, i) ?: break; i = r.second }
+                2 -> {
+                    val lenRes = readVarint(bytes, i) ?: break
+                    i = lenRes.second
+                    val len = lenRes.first.toInt()
+                    if (field == 3 && i + len <= bytes.size) {
+                        parseLayerName(bytes, i, i + len)?.let { names.add(it) }
+                    }
+                    i += len
+                }
+                5 -> i += 4
+                1 -> i += 8
+                else -> break
+            }
+        }
+        return names
+    }
+
+    private fun parseLayerName(bytes: ByteArray, start: Int, end: Int): String? {
+        var i = start
+        while (i < end) {
+            val tagRes = readVarint(bytes, i) ?: return null
+            i = tagRes.second
+            val field = (tagRes.first shr 3).toInt()
+            val wire = (tagRes.first and 7).toInt()
+            when (wire) {
+                2 -> {
+                    val lenRes = readVarint(bytes, i) ?: return null
+                    i = lenRes.second
+                    val len = lenRes.first.toInt()
+                    if (field == 1 && i + len <= end) {
+                        return String(bytes, i, len, Charsets.UTF_8)
+                    }
+                    i += len
+                }
+                0 -> { val r = readVarint(bytes, i) ?: return null; i = r.second }
+                5 -> i += 4
+                1 -> i += 8
+                else -> return null
+            }
+        }
+        return null
+    }
+
+    private fun readVarint(bytes: ByteArray, start: Int): Pair<Long, Int>? {
+        var result = 0L
+        var shift = 0
+        var i = start
+        while (i < bytes.size) {
+            val b = bytes[i].toInt() and 0xff
+            i++
+            result = result or ((b.toLong() and 0x7f) shl shift)
+            if (b and 0x80 == 0) return Pair(result, i)
+            shift += 7
+            if (shift > 63) return null
+        }
+        return null
+    }
+
     fun close() {
         try {
             db?.close()
             stop()
             Log.d(TAG, "Server stopped")
         } catch (e: Exception) {
-            Log.e(TAG, "Error closing", e)
+            Log.e(TAG, "Error stopping server", e)
         }
     }
 }

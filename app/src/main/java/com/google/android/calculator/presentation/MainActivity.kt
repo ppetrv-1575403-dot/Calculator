@@ -26,6 +26,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
 import org.maplibre.android.MapLibre
+
 import com.google.android.calculator.R
 
 class MainActivity : ComponentActivity() {
@@ -51,7 +52,7 @@ class MainActivity : ComponentActivity() {
             android.view.WindowManager.LayoutParams.FLAG_SECURE,
             android.view.WindowManager.LayoutParams.FLAG_SECURE
         )
-
+        
         // 2. Маскировка записи в списке задач (если вдруг приложение мелькнёт в recents)
         val name = getString(R.string.app_name)
         setTaskDescription(
@@ -62,7 +63,6 @@ class MainActivity : ComponentActivity() {
         
         enableEdgeToEdge()
 
-        //appContainer = AppContainer(applicationContext)
         appContainer = MyApplication.app?.appContainer as AppContainer
         
         clearCacheUseCase = ClearCacheUseCase(applicationContext)

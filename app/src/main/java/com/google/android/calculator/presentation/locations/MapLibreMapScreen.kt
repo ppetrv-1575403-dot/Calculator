@@ -11,7 +11,6 @@ import android.graphics.Path
 import android.location.Location
 import android.location.LocationListener
 import android.location.LocationManager
-import android.os.Bundle
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.*
@@ -22,7 +21,6 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color as ComposeColor
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
@@ -68,10 +66,15 @@ fun MapLibreMapScreen(
     val context = LocalContext.current
     var target by remember { mutableStateOf<SavedLocation?>(null) }
     var currentLocation by remember { mutableStateOf<Location?>(null) }
+    
     var routePoints by remember { mutableStateOf<List<Pair<Double, Double>>>(emptyList()) }
+    var connectionStartPoints by remember { mutableStateOf<List<Pair<Double, Double>>>(emptyList()) }
+    var connectionEndPoints by remember { mutableStateOf<List<Pair<Double, Double>>>(emptyList()) }
+    
     var routeDistance by remember { mutableStateOf<Double?>(null) }
     var routeDuration by remember { mutableStateOf<Double?>(null) }
-    var hasDirectLine by remember { mutableStateOf(false) }
+    var routeMode by remember { mutableStateOf<String>("") }
+    
     var isLoadingRoute by remember { mutableStateOf(false) }
     var isOfflineRouting by remember { mutableStateOf(false) }
     var hasCenteredOnUser by remember { mutableStateOf(false) }
@@ -83,9 +86,7 @@ fun MapLibreMapScreen(
     var mapRef by remember { mutableStateOf<MapLibreMap?>(null) }
     var userSourceRef by remember { mutableStateOf<GeoJsonSource?>(null) }
     var userLayerRef by remember { mutableStateOf<SymbolLayer?>(null) }
-    var routeSourceRef by remember { mutableStateOf<GeoJsonSource?>(null) }
     
-    // Executor для гарантированного таймаута роутинга
     val routeExecutor = remember { Executors.newSingleThreadExecutor() }
     
     var hasLocationPermission by remember {
@@ -99,6 +100,124 @@ fun MapLibreMapScreen(
 
     val permissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { g ->
         hasLocationPermission = g[Manifest.permission.ACCESS_FINE_LOCATION] == true
+    }
+
+    fun setupMapStyle(style: Style, logPrefix: String = "initial") {
+        try {
+            try { style.getLayer("route_layer")?.let { style.removeLayer(it) } } catch (_: Exception) {}
+            try { style.getLayer("connection_start_layer")?.let { style.removeLayer(it) } } catch (_: Exception) {}
+            try { style.getLayer("connection_end_layer")?.let { style.removeLayer(it) } } catch (_: Exception) {}
+            try { style.getLayer("user_layer")?.let { style.removeLayer(it) } } catch (_: Exception) {}
+            try { style.getLayer("target_layer")?.let { style.removeLayer(it) } } catch (_: Exception) {}
+            try { style.getSource("route_source")?.let { style.removeSource(it) } } catch (_: Exception) {}
+            try { style.getSource("connection_start_source")?.let { style.removeSource(it) } } catch (_: Exception) {}
+            try { style.getSource("connection_end_source")?.let { style.removeSource(it) } } catch (_: Exception) {}
+            try { style.getSource("user_source")?.let { style.removeSource(it) } } catch (_: Exception) {}
+            try { style.getSource("target_source")?.let { style.removeSource(it) } } catch (_: Exception) {}
+            
+            style.addImage("user_arrow", createUserArrowBitmap(Color.BLUE))
+            style.addImage("target_pin", createTargetPinBitmap())
+
+            val topLayerId = style.layers.lastOrNull()?.id
+
+            // Серая линия от конца маршрута до цели
+            val connectionEndSource = GeoJsonSource("connection_end_source")
+            style.addSource(connectionEndSource)
+            
+            val connectionEndLayer = LineLayer("connection_end_layer", "connection_end_source").withProperties(
+                PropertyFactory.lineColor("#9E9E9E"),
+                PropertyFactory.lineWidth(5f),
+                PropertyFactory.lineCap("round"),
+                PropertyFactory.lineJoin("round"),
+                PropertyFactory.lineOpacity(0.7f)
+            )
+
+            // Синяя линия от пользователя до начала маршрута
+            val connectionStartSource = GeoJsonSource("connection_start_source")
+            style.addSource(connectionStartSource)
+            
+            val connectionStartLayer = LineLayer("connection_start_layer", "connection_start_source").withProperties(
+                PropertyFactory.lineColor("#1565C0"),
+                PropertyFactory.lineWidth(6f),
+                PropertyFactory.lineCap("round"),
+                PropertyFactory.lineJoin("round"),
+                PropertyFactory.lineOpacity(0.9f)
+            )
+
+            // Основной маршрут (синий, толще)
+            val routeSource = GeoJsonSource("route_source")
+            style.addSource(routeSource)
+            
+            val routeLayer = LineLayer("route_layer", "route_source").withProperties(
+                PropertyFactory.lineColor("#1565C0"),
+                PropertyFactory.lineWidth(8f),
+                PropertyFactory.lineCap("round"),
+                PropertyFactory.lineJoin("round"),
+                PropertyFactory.lineOpacity(1.0f)
+            )
+
+            if (topLayerId != null) {
+                style.addLayerAbove(connectionEndLayer, topLayerId)
+                style.addLayerAbove(connectionStartLayer, "connection_end_layer")
+                style.addLayerAbove(routeLayer, "connection_start_layer")
+                FileLogger.i("Map", "[$logPrefix] ✅ Route layers added ABOVE '$topLayerId'")
+            } else {
+                style.addLayer(connectionEndLayer)
+                style.addLayer(connectionStartLayer)
+                style.addLayer(routeLayer)
+                FileLogger.i("Map", "[$logPrefix] ✅ Route layers added (no top layer)")
+            }
+
+            val userSource = GeoJsonSource("user_source")
+            style.addSource(userSource)
+            userSourceRef = userSource
+            val userLayer = SymbolLayer("user_layer", "user_source").withProperties(
+                PropertyFactory.iconImage("user_arrow"),
+                PropertyFactory.iconAllowOverlap(true),
+                PropertyFactory.iconIgnorePlacement(true)
+            )
+            style.addLayer(userLayer)
+            userLayerRef = userLayer
+
+            val targetSource = GeoJsonSource("target_source")
+            target?.let { t ->
+                targetSource.setGeoJson(
+                    """{"type":"Feature","geometry":{"type":"Point","coordinates":[${t.longitude},${t.latitude}]}}"""
+                )
+            }
+            style.addSource(targetSource)
+            style.addLayer(
+                SymbolLayer("target_layer", "target_source").withProperties(
+                    PropertyFactory.iconImage("target_pin"),
+                    PropertyFactory.iconAllowOverlap(true),
+                    PropertyFactory.iconIgnorePlacement(true)
+                )
+            )
+
+            if (routePoints.isNotEmpty()) {
+                routeSource.setGeoJson(pointsToLineString(routePoints))
+            }
+            if (connectionStartPoints.isNotEmpty()) {
+                connectionStartSource.setGeoJson(pointsToLineString(connectionStartPoints))
+            }
+            if (connectionEndPoints.isNotEmpty()) {
+                connectionEndSource.setGeoJson(pointsToLineString(connectionEndPoints))
+            }
+            
+            currentLocation?.let { loc ->
+                userSource.setGeoJson(
+                    """{"type":"Feature","geometry":{"type":"Point","coordinates":[${loc.longitude},${loc.latitude}]}}"""
+                )
+            }
+            
+            // === ДИАГНОСТИКА КАРТЫ: список слоёв и источников стиля ===
+            FileLogger.i("MapDiag", "[$logPrefix] Style layers (${style.layers.size}): ${style.layers.joinToString(", ") { it.id }}")
+            FileLogger.i("MapDiag", "[$logPrefix] Style sources: ${style.sources.joinToString(", ") { it.id }}")
+            
+            FileLogger.i("Map", "[$logPrefix] ✅ Style setup complete. Layers: ${style.layers.size}")
+        } catch (e: Exception) {
+            FileLogger.e("Map", "[$logPrefix] Failed to setup style", e)
+        }
     }
 
     LaunchedEffect(locationId) {
@@ -117,8 +236,8 @@ fun MapLibreMapScreen(
         }
     }
 
-    // Роутинг с гарантированным таймаутом через Java Executor
-    LaunchedEffect(target, transportMode, isOfflineRouting) {
+    // Роутинг — обновляется каждые 5 секунд
+    LaunchedEffect(target) {
         val t = target ?: return@LaunchedEffect
         FileLogger.i("Route", "Routing loop started for target: ${t.name}")
         
@@ -146,28 +265,22 @@ fun MapLibreMapScreen(
         
         while (true) {
             val cur = currentLocation
+            val currentTransport = transportMode
+            val useOffline = isOfflineRouting
+            
             if (cur == null) {
                 FileLogger.w("Route", "Waiting for GPS location...")
             } else {
-                FileLogger.d("Route", "Building route from (${cur.latitude}, ${cur.longitude}) to (${t.latitude}, ${t.longitude})")
-                
-                // СРАЗУ показываем прямую линию — UI не зависает
-                hasDirectLine = true
-                routePoints = listOf(
-                    Pair(cur.latitude, cur.longitude),
-                    Pair(t.latitude, t.longitude)
-                )
-                routeDistance = distanceBetween(cur.latitude, cur.longitude, t.latitude, t.longitude)
-                routeDuration = routeDistance?.let { dist ->
-                    if (transportMode == "car") dist / (50.0 / 3.6) else dist / (5.0 / 3.6)
-                }
                 isLoadingRoute = true
                 
-                if (isOfflineRouting) {
-                    val vehicle = if (transportMode == "car") "car" else "foot"
-                    FileLogger.d("Route", "Using offline routing, vehicle=$vehicle")
+                var points: List<Pair<Double, Double>>? = null
+                var distance: Double? = null
+                var duration: Double? = null
+                var mode: String = ""
+                
+                if (useOffline) {
+                    val vehicle = if (currentTransport == "car") "car" else "foot"
                     
-                    // Используем Executor для гарантированного таймаута
                     val future = routeExecutor.submit<Pair<List<Pair<Double, Double>>?, Double?>?> {
                         val pts = OfflineRouter.getRoute(
                             cur.latitude, cur.longitude,
@@ -185,112 +298,173 @@ fun MapLibreMapScreen(
                     }
                     
                     try {
-                        // Ждём максимум 10 секунд
                         val routeResult = future.get(10, TimeUnit.SECONDS)
+                        val pts: List<Pair<Double, Double>>? = routeResult?.first
+                        val dist: Double? = routeResult?.second
                         
-                        // Явно проверяем типы
-                        val points: List<Pair<Double, Double>>? = routeResult?.first
-                        val distance: Double? = routeResult?.second
-                        
-                        if (points != null && points.isNotEmpty()) {
-                            val lastPoint = points.last()
-                            val distToTarget = distanceBetween(lastPoint.first, lastPoint.second, t.latitude, t.longitude)
-                            
-                            val finalPoints: List<Pair<Double, Double>> = if (distToTarget > 100) {
-                                hasDirectLine = true
-                                points + Pair(t.latitude, t.longitude)
-                            } else {
-                                hasDirectLine = false
-                                points
+                        if (pts != null && pts.isNotEmpty()) {
+                            points = pts
+                            distance = dist
+                            duration = dist?.let { d ->
+                                if (currentTransport == "car") d / (50.0 / 3.6) else d / (5.0 / 3.6)
                             }
-                            
-                            routePoints = finalPoints
-                            routeDistance = distance
-                            routeDuration = distance?.let { dist ->
-                                if (transportMode == "car") dist / (50.0 / 3.6) else dist / (5.0 / 3.6)
-                            }
-                            
-                            FileLogger.i("Route", "✅ Offline route: ${finalPoints.size} points, distance=${distance}m")
-                        } else {
-                            FileLogger.w("Route", "No route found — keeping direct line")
+                            mode = "offline"
+                            FileLogger.i("Route", "✅ Offline route: ${pts.size} points")
                         }
                     } catch (e: TimeoutException) {
                         future.cancel(true)
-                        FileLogger.e("Route", "⏰ Route timeout (10s)! Keeping direct line")
+                        FileLogger.e("Route", "⏰ Route timeout (10s)!")
                     } catch (e: Exception) {
                         FileLogger.e("Route", "❌ Route failed: ${e.message}", e)
                     }
                 } else {
-                    FileLogger.d("Route", "Using online routing")
                     val route = withContext(Dispatchers.IO) {
                         try {
                             val roadManager = OSRMRoadManager(context, "calculator_vault_app")
-                            
-                            when (transportMode) {
+                            when (currentTransport) {
                                 "foot" -> roadManager.setMean(OSRMRoadManager.MEAN_BY_FOOT)
                                 "car" -> roadManager.setMean(OSRMRoadManager.MEAN_BY_CAR)
                                 else -> roadManager.setMean(OSRMRoadManager.MEAN_BY_FOOT)
                             }
-                            
                             val wayPoints = arrayListOf(
                                 GeoPoint(cur.latitude, cur.longitude),
                                 GeoPoint(t.latitude, t.longitude)
                             )
                             roadManager.getRoad(wayPoints)
-                        } catch (e: Exception) {
-                            FileLogger.e("Route", "Online routing failed", e)
-                            null
-                        }
+                        } catch (e: Exception) { null }
                     }
                     
                     if (route != null && route.mRouteHigh.isNotEmpty()) {
-                        val points = route.mRouteHigh.map { Pair(it.latitude, it.longitude) }
-                        val lastPoint = points.last()
-                        val distToTarget = distanceBetween(lastPoint.first, lastPoint.second, t.latitude, t.longitude)
-                        
-                        routePoints = if (distToTarget > 100) {
-                            hasDirectLine = true
-                            points + Pair(t.latitude, t.longitude)
-                        } else {
-                            hasDirectLine = false
-                            points
-                        }
-                        routeDistance = route.mLength * 1000
-                        routeDuration = route.mDuration
-                        FileLogger.i("Route", "✅ Online route: ${routePoints.size} points")
+                        points = route.mRouteHigh.map { Pair(it.latitude, it.longitude) }
+                        distance = route.mLength * 1000
+                        duration = route.mDuration
+                        mode = "online"
+                        FileLogger.i("Route", "✅ Online route: ${points.size} points")
                     }
+                }
+                
+                if (points != null && points.isNotEmpty()) {
+                    routePoints = points
+                    
+                    val firstPoint = points.first()
+                    val lastPoint = points.last()
+                    
+                    // Синяя линия от пользователя до начала маршрута
+                    val distFromUser = distanceBetween(cur.latitude, cur.longitude, firstPoint.first, firstPoint.second)
+                    if (distFromUser > 30) {
+                        connectionStartPoints = listOf(
+                            Pair(cur.latitude, cur.longitude),
+                            firstPoint
+                        )
+                    } else {
+                        connectionStartPoints = emptyList()
+                    }
+                    
+                    // Серая линия от конца маршрута до цели
+                    val distToTarget = distanceBetween(lastPoint.first, lastPoint.second, t.latitude, t.longitude)
+                    if (distToTarget > 30) {
+                        connectionEndPoints = listOf(lastPoint, Pair(t.latitude, t.longitude))
+                    } else {
+                        connectionEndPoints = emptyList()
+                    }
+                    
+                    routeMode = mode
+                    routeDistance = distance
+                    routeDuration = duration
+                } else {
+                    // Маршрут не построен — серая прямая от пользователя до цели
+                    connectionStartPoints = emptyList()
+                    connectionEndPoints = listOf(
+                        Pair(cur.latitude, cur.longitude),
+                        Pair(t.latitude, t.longitude)
+                    )
+                    distance = distanceBetween(cur.latitude, cur.longitude, t.latitude, t.longitude)
+                    duration = distance?.let { d ->
+                        if (currentTransport == "car") d / (50.0 / 3.6) else d / (5.0 / 3.6)
+                    }
+                    routeMode = "direct"
+                    routeDistance = distance
+                    routeDuration = duration
                 }
                 
                 isLoadingRoute = false
             }
-            delay(15000)
+            delay(5000)
         }
     }
 
-    // Обновление маршрута на карте
-    LaunchedEffect(routePoints, routeSourceRef) {
-        if (routePoints.isNotEmpty() && routeSourceRef != null) {
-            try {
-                routeSourceRef?.setGeoJson(routeToGeoJson(routePoints))
-                // Обновляем цвет линии: красный для прямой, синий для маршрута
-                mapRef?.style?.getLayer("route_layer")?.let { layer ->
-                    if (layer is LineLayer) {
-                        layer.setProperties(
-                            PropertyFactory.lineColor(if (hasDirectLine) "#FF5722" else "#2196F3")
-                        )
-                    }
-                }
-                FileLogger.d("Route", "Route displayed on map: ${routePoints.size} points, direct=$hasDirectLine")
-            } catch (e: Exception) {
-                FileLogger.e("Route", "Failed to display route", e)
+    // Обновление маршрутов на карте
+    LaunchedEffect(routePoints, connectionStartPoints, connectionEndPoints) {
+        FileLogger.d("Route", "LaunchedEffect: route=${routePoints.size}, connStart=${connectionStartPoints.size}, connEnd=${connectionEndPoints.size}")
+        
+        try {
+            val map = mapRef
+            val style = map?.style
+            
+            if (map == null || style == null) {
+                FileLogger.w("Route", "⚠️ Map or Style is NULL, skipping")
+                return@LaunchedEffect
             }
+            
+            val routeSourceInStyle = style.getSource("route_source")
+            val connStartSourceInStyle = style.getSource("connection_start_source")
+            val connEndSourceInStyle = style.getSource("connection_end_source")
+            
+            if (routeSourceInStyle == null || connStartSourceInStyle == null || connEndSourceInStyle == null) {
+                FileLogger.w("Route", "⚠️ Sources missing! Re-adding...")
+                setupMapStyle(style, "recovery")
+                return@LaunchedEffect
+            }
+            
+            // Основной маршрут
+            if (routePoints.isNotEmpty()) {
+                delay(300)
+                val source = style.getSourceAs<GeoJsonSource>("route_source")
+                source?.setGeoJson(pointsToLineString(routePoints))
+                map.triggerRepaint()
+                FileLogger.i("Route", "✅ Route APPLIED: ${routePoints.size} pts")
+            } else {
+                val source = style.getSourceAs<GeoJsonSource>("route_source")
+                source?.setGeoJson("""{"type":"Feature","geometry":{"type":"LineString","coordinates":[]}}""")
+                map.triggerRepaint()
+            }
+            
+            // Синяя линия от пользователя до начала маршрута
+            if (connectionStartPoints.isNotEmpty()) {
+                delay(300)
+                val source = style.getSourceAs<GeoJsonSource>("connection_start_source")
+                source?.setGeoJson(pointsToLineString(connectionStartPoints))
+                map.triggerRepaint()
+                FileLogger.i("Route", "✅ Connection START (blue) APPLIED: ${connectionStartPoints.size} pts")
+            } else {
+                val source = style.getSourceAs<GeoJsonSource>("connection_start_source")
+                source?.setGeoJson("""{"type":"Feature","geometry":{"type":"LineString","coordinates":[]}}""")
+                map.triggerRepaint()
+            }
+            
+            // Серая линия от конца маршрута до цели
+            if (connectionEndPoints.isNotEmpty()) {
+                delay(300)
+                val source = style.getSourceAs<GeoJsonSource>("connection_end_source")
+                source?.setGeoJson(pointsToLineString(connectionEndPoints))
+                map.triggerRepaint()
+                FileLogger.i("Route", "✅ Connection END (gray) APPLIED: ${connectionEndPoints.size} pts")
+            } else {
+                val source = style.getSourceAs<GeoJsonSource>("connection_end_source")
+                source?.setGeoJson("""{"type":"Feature","geometry":{"type":"LineString","coordinates":[]}}""")
+                map.triggerRepaint()
+            }
+        } catch (e: Exception) {
+            FileLogger.e("Route", "Failed to update route", e)
         }
     }
 
     // Обновление позиции пользователя и центрирование
-    LaunchedEffect(currentLocation, userSourceRef) {
+    LaunchedEffect(currentLocation) {
         currentLocation?.let { loc ->
-            userSourceRef?.setGeoJson(
+            val style = mapRef?.style
+            val source = style?.getSourceAs<GeoJsonSource>("user_source")
+            source?.setGeoJson(
                 """{"type":"Feature","geometry":{"type":"Point","coordinates":[${loc.longitude},${loc.latitude}]}}"""
             )
             mapRef?.let { map ->
@@ -308,7 +482,6 @@ fun MapLibreMapScreen(
         }
     }
 
-    // Компас — напрямую обновляем слой, без Compose state
     DisposableEffect(Unit) {
         val sm = context.getSystemService(Context.SENSOR_SERVICE) as android.hardware.SensorManager
         val sensor = sm.getDefaultSensor(android.hardware.Sensor.TYPE_ROTATION_VECTOR)
@@ -320,7 +493,6 @@ fun MapLibreMapScreen(
                 android.hardware.SensorManager.getRotationMatrixFromVector(rm, e.values)
                 android.hardware.SensorManager.getOrientation(rm, or)
                 val newAzimuth = Math.toDegrees(or[0].toDouble()).toFloat()
-                
                 if (Math.abs(newAzimuth - lastAzimuth) > 10f) {
                     lastAzimuth = newAzimuth
                     userLayerRef?.setProperties(PropertyFactory.iconRotate(newAzimuth))
@@ -332,26 +504,20 @@ fun MapLibreMapScreen(
         onDispose { sm.unregisterListener(listener) }
     }
 
-    // GPS
     DisposableEffect(hasLocationPermission) {
         if (!hasLocationPermission) return@DisposableEffect onDispose { }
         val lm = context.getSystemService(Context.LOCATION_SERVICE) as LocationManager
         val listener = object : LocationListener {
-            override fun onLocationChanged(l: Location) {
-                currentLocation = l
-            }
+            override fun onLocationChanged(l: Location) { currentLocation = l }
             @Deprecated("Deprecated in Java")
-            override fun onStatusChanged(p: String?, s: Int, b: Bundle?) {}
+            override fun onStatusChanged(p: String?, s: Int, b: android.os.Bundle?) {}
             override fun onProviderEnabled(p: String) {}
             override fun onProviderDisabled(p: String) {}
         }
         try {
             lm.requestLocationUpdates(LocationManager.GPS_PROVIDER, 2000, 5f, listener)
             lm.requestLocationUpdates(LocationManager.NETWORK_PROVIDER, 2000, 5f, listener)
-            FileLogger.i("GPS", "Location updates started")
-        } catch (e: Exception) {
-            FileLogger.e("GPS", "Failed to start location updates", e)
-        }
+        } catch (e: Exception) { }
         onDispose { lm.removeUpdates(listener) }
     }
 
@@ -365,12 +531,8 @@ fun MapLibreMapScreen(
                 title = { Text(target?.name ?: "Карта", maxLines = 1) },
                 navigationIcon = { IconButton(onClick = onBack) { @Suppress("DEPRECATION") Icon(Icons.Default.ArrowBack, "Назад") } },
                 actions = {
-                    IconButton(onClick = onOpenOfflineMaps) {
-                        Icon(Icons.Default.Map, "Оффлайн-карты")
-                    }
-                    IconButton(onClick = { target?.let { onEditLocation(it.id) } }) {
-                        Icon(Icons.Default.Edit, "Редактировать")
-                    }
+                    IconButton(onClick = onOpenOfflineMaps) { Icon(Icons.Default.Map, "Оффлайн-карты") }
+                    IconButton(onClick = { target?.let { onEditLocation(it.id) } }) { Icon(Icons.Default.Edit, "Редактировать") }
                 }
             )
         }
@@ -394,53 +556,23 @@ fun MapLibreMapScreen(
                         }
 
                         isOfflineMode = tileSourceUrl.contains("localhost")
-                        FileLogger.i("Map", "Using tile source: $tileSourceUrl")
+                        FileLogger.i("MapDiag", "Tile source URL: $tileSourceUrl")
 
                         val styleBuilder = Style.Builder().fromJson(MapStyleUtils.getBasicStyleJson(tileSourceUrl))
 
                         map.setStyle(styleBuilder) { style ->
-                            style.addImage("user_arrow", createUserArrowBitmap(Color.BLUE))
-                            style.addImage("target_pin", createTargetPinBitmap())
+                            setupMapStyle(style, "initial")
+                        }
 
-                            val routeSource = GeoJsonSource("route_source")
-                            style.addSource(routeSource)
-                            routeSourceRef = routeSource
-                            style.addLayer(
-                                LineLayer("route_layer", "route_source").withProperties(
-                                    PropertyFactory.lineColor("#FF5722"),
-                                    PropertyFactory.lineWidth(4f),
-                                    PropertyFactory.lineCap("round"),
-                                    PropertyFactory.lineJoin("round")
-                                )
-                            )
+                        // === ДИАГНОСТИКА КАРТЫ ===
+                        map.addOnCameraIdleListener {
+                            val pos = map.cameraPosition
+                            FileLogger.d("MapDiag", "📍 Camera: zoom=${"%.2f".format(pos.zoom)}, target=${pos.target}")
+                        }
 
-                            val userSource = GeoJsonSource("user_source")
-                            style.addSource(userSource)
-                            userSourceRef = userSource
-                            val userLayer = SymbolLayer("user_layer", "user_source").withProperties(
-                                PropertyFactory.iconImage("user_arrow"),
-                                PropertyFactory.iconAllowOverlap(true),
-                                PropertyFactory.iconIgnorePlacement(true)
-                            )
-                            style.addLayer(userLayer)
-                            userLayerRef = userLayer
-
-                            val targetSource = GeoJsonSource("target_source")
-                            target?.let { t ->
-                                targetSource.setGeoJson(
-                                    """{"type":"Feature","geometry":{"type":"Point","coordinates":[${t.longitude},${t.latitude}]}}"""
-                                )
-                            }
-                            style.addSource(targetSource)
-                            style.addLayer(
-                                SymbolLayer("target_layer", "target_source").withProperties(
-                                    PropertyFactory.iconImage("target_pin"),
-                                    PropertyFactory.iconAllowOverlap(true),
-                                    PropertyFactory.iconIgnorePlacement(true)
-                                )
-                            )
-
-                            FileLogger.i("Map", "Style applied, layers: ${style.layers.size}")
+                        // Если этот блок даст ошибку сборки — просто удали его (3 строки)
+                        mapView.addOnDidFinishLoadingStyleListener {
+                            FileLogger.i("MapDiag", "🎨 Style finished loading")
                         }
 
                         target?.let { t ->
@@ -481,9 +613,7 @@ fun MapLibreMapScreen(
                 }
 
                 FloatingActionButton(
-                    onClick = {
-                        currentLocation?.let { hasCenteredOnUser = false }
-                    },
+                    onClick = { currentLocation?.let { hasCenteredOnUser = false } },
                     shape = CircleShape,
                     containerColor = MaterialTheme.colorScheme.primaryContainer,
                     contentColor = MaterialTheme.colorScheme.onPrimaryContainer
@@ -508,13 +638,13 @@ fun MapLibreMapScreen(
                         Icon(
                             Icons.Default.Navigation, null,
                             Modifier.size(32.dp),
-                            tint = if (hasDirectLine) ComposeColor(0xFFFF5722) else ComposeColor(0xFF2196F3)
+                            tint = androidx.compose.ui.graphics.Color(0xFF1565C0)
                         )
                         Spacer(Modifier.width(12.dp))
                         Column(Modifier.weight(1f)) {
                             Text(
                                 when {
-                                    routePoints.isNotEmpty() -> formatRouteInfo(routeDistance, routeDuration, isOfflineRouting, hasDirectLine)
+                                    routeDistance != null -> formatRouteInfo(routeDistance, routeDuration, routeMode)
                                     isLoadingRoute -> "Строим маршрут..."
                                     else -> distance?.let { formatDistance(it) } ?: "Определение расстояния..."
                                 },
@@ -532,37 +662,13 @@ fun MapLibreMapScreen(
                         }
                     }
 
-                    if (hasDirectLine && routePoints.isNotEmpty()) {
-                        Row(
-                            Modifier.fillMaxWidth(),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Icon(
-                                Icons.Default.Warning,
-                                null,
-                                Modifier.size(14.dp),
-                                tint = ComposeColor(0xFFFF5722)
-                            )
-                            Spacer(Modifier.width(4.dp))
-                            Text(
-                                if (isLoadingRoute) "Строим маршрут..." else "Маршрут неполный — часть по прямой",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = ComposeColor(0xFFFF5722)
-                            )
-                        }
-                    }
-
                     HorizontalDivider()
 
                     Row(
                         Modifier.fillMaxWidth(),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Text(
-                            "Транспорт:",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
+                        Text("Транспорт:", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         Spacer(Modifier.width(8.dp))
 
                         FilterChip(
@@ -571,12 +677,12 @@ fun MapLibreMapScreen(
                                 if (transportMode != "foot") {
                                     transportMode = "foot"
                                     routePoints = emptyList()
+                                    connectionStartPoints = emptyList()
+                                    connectionEndPoints = emptyList()
                                 }
                             },
                             label = { Text("Пешком") },
-                            leadingIcon = if (transportMode == "foot") {
-                                { Icon(Icons.Default.DirectionsWalk, null, Modifier.size(16.dp)) }
-                            } else null,
+                            leadingIcon = { Icon(Icons.Default.DirectionsWalk, null, Modifier.size(16.dp)) },
                             colors = FilterChipDefaults.filterChipColors(
                                 selectedContainerColor = MaterialTheme.colorScheme.primaryContainer,
                                 selectedLabelColor = MaterialTheme.colorScheme.onPrimaryContainer
@@ -591,12 +697,12 @@ fun MapLibreMapScreen(
                                 if (transportMode != "car") {
                                     transportMode = "car"
                                     routePoints = emptyList()
+                                    connectionStartPoints = emptyList()
+                                    connectionEndPoints = emptyList()
                                 }
                             },
                             label = { Text("Машина") },
-                            leadingIcon = if (transportMode == "car") {
-                                { Icon(Icons.Default.DirectionsCar, null, Modifier.size(16.dp)) }
-                            } else null,
+                            leadingIcon = { Icon(Icons.Default.DirectionsCar, null, Modifier.size(16.dp)) },
                             colors = FilterChipDefaults.filterChipColors(
                                 selectedContainerColor = MaterialTheme.colorScheme.primaryContainer,
                                 selectedLabelColor = MaterialTheme.colorScheme.onPrimaryContainer
@@ -609,8 +715,7 @@ fun MapLibreMapScreen(
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Icon(
                             if (isOfflineMode) Icons.Default.CloudOff else Icons.Default.CloudDone,
-                            null,
-                            Modifier.size(20.dp),
+                            null, Modifier.size(20.dp),
                             tint = MaterialTheme.colorScheme.primary
                         )
                         Spacer(Modifier.width(8.dp))
@@ -640,25 +745,23 @@ private fun distanceBetween(lat1: Double, lon1: Double, lat2: Double, lon2: Doub
     return results[0].toDouble()
 }
 
-private fun routeToGeoJson(points: List<Pair<Double, Double>>): String {
+private fun pointsToLineString(points: List<Pair<Double, Double>>): String {
     val coords = points.joinToString(",") { "[${it.second},${it.first}]" }
     return """{"type":"Feature","geometry":{"type":"LineString","coordinates":[$coords]}}"""
 }
 
 private fun formatDistance(m: Float): String = if (m < 1000) "${m.toInt()} м" else String.format("%.2f км", m / 1000)
 
-private fun formatRouteInfo(distance: Double?, duration: Double?, isOffline: Boolean, hasDirectLine: Boolean): String {
+private fun formatRouteInfo(distance: Double?, duration: Double?, mode: String): String {
     val dist = distance ?: return "Маршрут построен"
-    
     val distStr = if (dist < 1000) "${dist.toInt()} м" else String.format("%.2f км", dist / 1000)
     val durStr = duration?.let { " • ${it.toInt() / 60} мин" } ?: ""
-    val modeStr = when {
-        isOffline && hasDirectLine -> " (оффлайн, частично)"
-        isOffline -> " (оффлайн)"
-        hasDirectLine -> " (частично)"
+    val modeStr = when (mode) {
+        "offline" -> " (оффлайн)"
+        "online" -> " (онлайн)"
+        "direct" -> " (по прямой)"
         else -> ""
     }
-    
     return "$distStr$durStr$modeStr"
 }
 
@@ -666,33 +769,16 @@ private fun createUserArrowBitmap(color: Int): Bitmap {
     val size = 80
     val bitmap = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
     val canvas = Canvas(bitmap)
-
-    val outlinePaint = Paint().apply {
-        this.color = Color.WHITE
-        style = Paint.Style.FILL
-        isAntiAlias = true
-    }
-    val fillPaint = Paint().apply {
-        this.color = color
-        style = Paint.Style.FILL
-        isAntiAlias = true
-    }
-
+    val outlinePaint = Paint().apply { this.color = Color.WHITE; style = Paint.Style.FILL; isAntiAlias = true }
+    val fillPaint = Paint().apply { this.color = color; style = Paint.Style.FILL; isAntiAlias = true }
     val outlinePath = Path().apply {
-        moveTo(size / 2f, -4f)
-        lineTo(size * 0.85f, size * 0.95f)
-        lineTo(size / 2f, size * 0.7f)
-        lineTo(size * 0.15f, size * 0.95f)
-        close()
+        moveTo(size / 2f, -4f); lineTo(size * 0.85f, size * 0.95f)
+        lineTo(size / 2f, size * 0.7f); lineTo(size * 0.15f, size * 0.95f); close()
     }
     val fillPath = Path().apply {
-        moveTo(size / 2f, 2f)
-        lineTo(size * 0.8f, size * 0.9f)
-        lineTo(size / 2f, size * 0.65f)
-        lineTo(size * 0.2f, size * 0.9f)
-        close()
+        moveTo(size / 2f, 2f); lineTo(size * 0.8f, size * 0.9f)
+        lineTo(size / 2f, size * 0.65f); lineTo(size * 0.2f, size * 0.9f); close()
     }
-
     canvas.drawPath(outlinePath, outlinePaint)
     canvas.drawPath(fillPath, fillPaint)
     return bitmap
@@ -702,33 +788,17 @@ private fun createTargetPinBitmap(): Bitmap {
     val size = 80
     val bitmap = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
     val canvas = Canvas(bitmap)
-
-    val outlinePaint = Paint().apply {
-        color = Color.WHITE
-        style = Paint.Style.FILL
-        isAntiAlias = true
-    }
-    val fillPaint = Paint().apply {
-        color = Color.RED
-        style = Paint.Style.FILL
-        isAntiAlias = true
-    }
-
+    val outlinePaint = Paint().apply { color = Color.WHITE; style = Paint.Style.FILL; isAntiAlias = true }
+    val fillPaint = Paint().apply { color = Color.RED; style = Paint.Style.FILL; isAntiAlias = true }
     canvas.drawCircle(size / 2f, size / 3f, size / 4f + 4f, outlinePaint)
     canvas.drawCircle(size / 2f, size / 3f, size / 4f, fillPaint)
     val path = Path().apply {
         moveTo(size / 2f - size / 5f, size / 3f + size / 6f)
         lineTo(size / 2f, size.toFloat() - 4f)
-        lineTo(size / 2f + size / 5f, size / 3f + size / 6f)
-        close()
+        lineTo(size / 2f + size / 5f, size / 3f + size / 6f); close()
     }
     canvas.drawPath(path, fillPaint)
-    val dotPaint = Paint().apply {
-        color = Color.WHITE
-        style = Paint.Style.FILL
-        isAntiAlias = true
-    }
+    val dotPaint = Paint().apply { color = Color.WHITE; style = Paint.Style.FILL; isAntiAlias = true }
     canvas.drawCircle(size / 2f, size / 3f, size / 10f, dotPaint)
-
     return bitmap
 }
