@@ -21,7 +21,9 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.zIndex
@@ -82,6 +84,11 @@ fun MapLibreMapScreen(
     var transportMode by remember { mutableStateOf("foot") }
     var isOfflineMode by remember { mutableStateOf(false) }
     var currentRegionId by remember { mutableStateOf<String?>(null) }
+    
+    // === UI: сворачиваемая панель и регенерация маршрута ===
+    var isPanelExpanded by remember { mutableStateOf(false) }
+    var panelHeight by remember { mutableStateOf(0.dp) }
+    var routeRegenCounter by remember { mutableStateOf(0) }
     
     var mapRef by remember { mutableStateOf<MapLibreMap?>(null) }
     var userSourceRef by remember { mutableStateOf<GeoJsonSource?>(null) }
@@ -236,8 +243,8 @@ fun MapLibreMapScreen(
         }
     }
 
-    // Роутинг — обновляется каждые 5 секунд И мгновенно при смене транспорта
-    LaunchedEffect(target, transportMode) {
+    // Роутинг — обновляется каждые 5 секунд, при смене транспорта и при регенерации
+    LaunchedEffect(target, transportMode, routeRegenCounter) {
         val t = target ?: return@LaunchedEffect
         FileLogger.i("Route", "Routing loop started for target: ${t.name}, transport=$transportMode")
         
@@ -298,7 +305,7 @@ fun MapLibreMapScreen(
                     }
                     
                     try {
-                        val routeResult = future.get(10, TimeUnit.SECONDS)
+                        val routeResult = future.get(30, TimeUnit.SECONDS)
                         val pts: List<Pair<Double, Double>>? = routeResult?.first
                         val dist: Double? = routeResult?.second
                         
@@ -392,6 +399,7 @@ fun MapLibreMapScreen(
             delay(5000)
         }
     }
+
     // Обновление маршрутов на карте
     LaunchedEffect(routePoints, connectionStartPoints, connectionEndPoints, routeMode, transportMode) {
         val map = mapRef
@@ -505,7 +513,8 @@ fun MapLibreMapScreen(
 
     val targetLoc = target?.let { Location("target").apply { latitude = it.latitude; longitude = it.longitude } }
     val distance = currentLocation?.let { c -> targetLoc?.let { t -> c.distanceTo(t) } }
-
+    val density = LocalDensity.current
+    
     Scaffold(
         contentWindowInsets = WindowInsets(0, 0, 0, 0),
         topBar = {
@@ -571,11 +580,12 @@ fun MapLibreMapScreen(
                 modifier = Modifier.fillMaxSize()
             )
 
+            // === FAB-кнопки: всегда над панелью ===
             Column(
                 modifier = Modifier
                     .align(Alignment.BottomEnd)
                     .navigationBarsPadding()
-                    .padding(end = 16.dp, bottom = 200.dp)
+                    .padding(end = 16.dp, bottom = panelHeight + 12.dp)
                     .zIndex(100f),
                 verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
@@ -604,25 +614,30 @@ fun MapLibreMapScreen(
                 }
             }
 
+            // === Нижняя панель: сворачиваемая ===
             Surface(
                 Modifier
                     .align(Alignment.BottomCenter)
                     .navigationBarsPadding()
-                    .padding(16.dp)
+                    .padding(horizontal = 12.dp, vertical = 8.dp)
                     .fillMaxWidth()
+                    .onGloballyPositioned { coords ->
+                        panelHeight = with(density) { coords.size.height.toDp() }
+                    }
                     .zIndex(100f),
                 tonalElevation = 4.dp,
                 shape = MaterialTheme.shapes.medium,
                 color = MaterialTheme.colorScheme.surface.copy(alpha = 0.95f)
             ) {
-                Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Column(Modifier.padding(horizontal = 12.dp, vertical = 6.dp)) {
+                    // Верхняя строка — видна всегда
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Icon(
                             Icons.Default.Navigation, null,
-                            Modifier.size(32.dp),
+                            Modifier.size(24.dp),
                             tint = androidx.compose.ui.graphics.Color(0xFF1565C0)
                         )
-                        Spacer(Modifier.width(12.dp))
+                        Spacer(Modifier.width(8.dp))
                         Column(Modifier.weight(1f)) {
                             Text(
                                 when {
@@ -630,89 +645,112 @@ fun MapLibreMapScreen(
                                     isLoadingRoute -> "Строим маршрут..."
                                     else -> distance?.let { formatDistance(it) } ?: "Определение расстояния..."
                                 },
-                                style = MaterialTheme.typography.titleMedium
+                                style = MaterialTheme.typography.titleMedium,
+                                maxLines = 1
                             )
-                            target?.let {
-                                Text("%.5f, %.5f".format(it.latitude, it.longitude),
-                                    style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            if (isPanelExpanded) {
+                                target?.let {
+                                    Text(
+                                        "%.5f, %.5f".format(it.latitude, it.longitude),
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
                             }
                         }
-                        if (target?.photoId != null) {
+                        if (isPanelExpanded && target?.photoId != null) {
                             IconButton(onClick = { target?.photoId?.let { onOpenPhoto(it) } }) {
-                                Icon(Icons.Default.Image, "Фото")
+                                Icon(Icons.Default.Image, "Фото", Modifier.size(20.dp))
                             }
+                        }
+                        // Кнопка регенерации маршрута
+                        IconButton(onClick = {
+                            routePoints = emptyList()
+                            connectionStartPoints = emptyList()
+                            connectionEndPoints = emptyList()
+                            routeRegenCounter++
+                        }) {
+                            Icon(Icons.Default.Refresh, "Перегенерировать маршрут", Modifier.size(20.dp))
+                        }
+                        // Свернуть / развернуть
+                        IconButton(onClick = { isPanelExpanded = !isPanelExpanded }) {
+                            Icon(
+                                if (isPanelExpanded) Icons.Default.KeyboardArrowDown else Icons.Default.KeyboardArrowUp,
+                                if (isPanelExpanded) "Свернуть" else "Развернуть",
+                                Modifier.size(22.dp)
+                            )
                         }
                     }
 
-                    HorizontalDivider()
+                    // Раскрывающаяся часть
+                    if (isPanelExpanded) {
+                        HorizontalDivider(Modifier.padding(vertical = 6.dp))
 
-                    Row(
-                        Modifier.fillMaxWidth(),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Text("Транспорт:", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                        Spacer(Modifier.width(8.dp))
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text("Транспорт:", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            Spacer(Modifier.width(8.dp))
 
-                        FilterChip(
-                            selected = transportMode == "foot",
-                            onClick = {
-                                if (transportMode != "foot") {
-                                    transportMode = "foot"
-                                    routePoints = emptyList()
-                                    connectionStartPoints = emptyList()
-                                    connectionEndPoints = emptyList()
-                                }
-                            },
-                            label = { Text("Пешком") },
-                            leadingIcon = { Icon(Icons.Default.DirectionsWalk, null, Modifier.size(16.dp)) },
-                            colors = FilterChipDefaults.filterChipColors(
-                                selectedContainerColor = MaterialTheme.colorScheme.primaryContainer,
-                                selectedLabelColor = MaterialTheme.colorScheme.onPrimaryContainer
+                            FilterChip(
+                                selected = transportMode == "foot",
+                                onClick = {
+                                    if (transportMode != "foot") {
+                                        transportMode = "foot"
+                                        routePoints = emptyList()
+                                        connectionStartPoints = emptyList()
+                                        connectionEndPoints = emptyList()
+                                    }
+                                },
+                                label = { Text("Пешком", style = MaterialTheme.typography.bodySmall) },
+                                leadingIcon = { Icon(Icons.Default.DirectionsWalk, null, Modifier.size(16.dp)) },
+                                colors = FilterChipDefaults.filterChipColors(
+                                    selectedContainerColor = MaterialTheme.colorScheme.primaryContainer,
+                                    selectedLabelColor = MaterialTheme.colorScheme.onPrimaryContainer
+                                )
                             )
-                        )
 
-                        Spacer(Modifier.width(8.dp))
+                            Spacer(Modifier.width(8.dp))
 
-                        FilterChip(
-                            selected = transportMode == "car",
-                            onClick = {
-                                if (transportMode != "car") {
-                                    transportMode = "car"
-                                    routePoints = emptyList()
-                                    connectionStartPoints = emptyList()
-                                    connectionEndPoints = emptyList()
-                                }
-                            },
-                            label = { Text("Машина") },
-                            leadingIcon = { Icon(Icons.Default.DirectionsCar, null, Modifier.size(16.dp)) },
-                            colors = FilterChipDefaults.filterChipColors(
-                                selectedContainerColor = MaterialTheme.colorScheme.primaryContainer,
-                                selectedLabelColor = MaterialTheme.colorScheme.onPrimaryContainer
+                            FilterChip(
+                                selected = transportMode == "car",
+                                onClick = {
+                                    if (transportMode != "car") {
+                                        transportMode = "car"
+                                        routePoints = emptyList()
+                                        connectionStartPoints = emptyList()
+                                        connectionEndPoints = emptyList()
+                                    }
+                                },
+                                label = { Text("Машина", style = MaterialTheme.typography.bodySmall) },
+                                leadingIcon = { Icon(Icons.Default.DirectionsCar, null, Modifier.size(16.dp)) },
+                                colors = FilterChipDefaults.filterChipColors(
+                                    selectedContainerColor = MaterialTheme.colorScheme.primaryContainer,
+                                    selectedLabelColor = MaterialTheme.colorScheme.onPrimaryContainer
+                                )
                             )
-                        )
-                    }
+                        }
 
-                    HorizontalDivider()
+                        HorizontalDivider(Modifier.padding(vertical = 6.dp))
 
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Icon(
-                            if (isOfflineMode) Icons.Default.CloudOff else Icons.Default.CloudDone,
-                            null, Modifier.size(20.dp),
-                            tint = MaterialTheme.colorScheme.primary
-                        )
-                        Spacer(Modifier.width(8.dp))
-                        Text(
-                            when {
-                                isOfflineMode && isOfflineRouting -> "Оффлайн: карта + роутинг"
-                                isOfflineMode -> "Оффлайн: карта, онлайн-роутинг"
-                                isOfflineRouting -> "Онлайн-карта, оффлайн-роутинг"
-                                else -> "Онлайн-режим"
-                            },
-                            style = MaterialTheme.typography.bodyMedium,
-                            modifier = Modifier.weight(1f)
-                        )
-                        IconButton(onClick = onOpenOfflineMaps) {
-                            Icon(Icons.Default.Settings, "Управление картами", Modifier.size(20.dp))
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(
+                                if (isOfflineMode) Icons.Default.CloudOff else Icons.Default.CloudDone,
+                                null, Modifier.size(18.dp),
+                                tint = MaterialTheme.colorScheme.primary
+                            )
+                            Spacer(Modifier.width(8.dp))
+                            Text(
+                                when {
+                                    isOfflineMode && isOfflineRouting -> "Оффлайн: карта + роутинг"
+                                    isOfflineMode -> "Оффлайн: карта, онлайн-роутинг"
+                                    isOfflineRouting -> "Онлайн-карта, оффлайн-роутинг"
+                                    else -> "Онлайн-режим"
+                                },
+                                style = MaterialTheme.typography.bodySmall,
+                                modifier = Modifier.weight(1f)
+                            )
+                            IconButton(onClick = onOpenOfflineMaps) {
+                                Icon(Icons.Default.Settings, "Управление картами", Modifier.size(18.dp))
+                            }
                         }
                     }
                 }
