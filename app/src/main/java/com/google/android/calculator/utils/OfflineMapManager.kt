@@ -24,11 +24,11 @@ object OfflineMapManager {
     private var currentServer: MbtilesTileServer? = null
     private var currentRegionId: String? = null
 
-    private fun toast(context: Context, message: String, long: Boolean = false) {
-        mainHandler.post {
-            Toast.makeText(context, message, if (long) Toast.LENGTH_LONG else Toast.LENGTH_SHORT).show()
-        }
-    }
+    //private fun toast(context: Context, message: String, long: Boolean = false) {
+    //    mainHandler.post {
+    //        Toast.makeText(context, message, if (long) Toast.LENGTH_LONG else Toast.LENGTH_SHORT).show()
+    //    }
+    //}
 
     // === Методы для карт ===
 
@@ -41,7 +41,7 @@ object OfflineMapManager {
     ) {
         CoroutineScope(Dispatchers.IO).launch {
             try {
-                mainHandler.post { toast(context, "🌐 Начинаем загрузку карт: ${region.name}") }
+                //mainHandler.post { toast(context, "🌐 Начинаем загрузку карт: ${region.name}") }
 
                 val url = URL(getMbtilesUrl(region.id))
                 val connection = url.openConnection() as HttpURLConnection
@@ -85,13 +85,15 @@ object OfflineMapManager {
                 tempFile.renameTo(targetFile)
 
                 mainHandler.post {
-                    toast(context, "✅ Карты загружены: ${region.name}")
+                    FileLogger.i("", "✅ Карты загружены: ${region.name}")
                     onComplete()
                 }
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                Log.e(TAG, "Download failed", e)
+            } 
+            //catch (e: CancellationException) {
+            //    throw e
+            //} 
+            catch (e: Exception) {
+                FileLogger.e(TAG, "Download failed", e)
                 mainHandler.post { onError(e.message ?: "Неизвестная ошибка") }
             }
         }
@@ -156,10 +158,10 @@ object OfflineMapManager {
             currentServer = server
             currentRegionId = regionId
 
-            Log.d(TAG, "✅ Server started on port $SERVER_PORT")
+            FileLogger.d(TAG, "✅ Server started on port $SERVER_PORT")
             return "http://localhost:$SERVER_PORT/{z}/{x}/{y}.pbf"
         } catch (e: Exception) {
-            Log.e(TAG, "❌ Failed to start server", e)
+            FileLogger.e(TAG, "❌ Failed to start server", e)
             return null
         }
     }
@@ -174,7 +176,7 @@ object OfflineMapManager {
         try {
             currentServer?.close()
         } catch (e: Exception) {
-            Log.e(TAG, "Error stopping server", e)
+            FileLogger.e(TAG, "Error stopping server", e)
         }
         currentServer = null
         currentRegionId = null
@@ -226,7 +228,7 @@ object OfflineMapManager {
     ) {
         CoroutineScope(Dispatchers.IO).launch {
             try {
-                mainHandler.post { toast(context, "🧭 Скачиваем граф дорог: ${region.name}") }
+                //mainHandler.post { toast(context, "🧭 Скачиваем граф дорог: ${region.name}") }
 
                 val url = URL(getGraphUrl(region.id))
                 val connection = url.openConnection() as HttpURLConnection
@@ -304,14 +306,14 @@ object OfflineMapManager {
                 
                 // Диагностика
                 val files = graphDir.walkTopDown().filter { it.isFile }.toList()
-                Log.d(TAG, "Extracted ${files.size} files")
+                FileLogger.d(TAG, "Extracted ${files.size} files")
 
                 mainHandler.post {
-                    toast(context, "✅ Граф дорог загружен: ${region.name}")
+                    FileLogger.i("", "✅ Граф дорог загружен: ${region.name}")
                     onComplete()
                 }
             } catch (e: Exception) {
-                Log.e(TAG, "Graph download failed", e)
+                FileLogger.e(TAG, "Graph download failed", e)
                 mainHandler.post { onError(e.message ?: "Неизвестная ошибка") }
             }
         }

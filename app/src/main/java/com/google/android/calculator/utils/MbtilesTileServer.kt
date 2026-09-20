@@ -72,20 +72,9 @@ class MbtilesTileServer(
             FileLogger.i(TAG, "Zoom dist: $zoomDistribution")
             FileLogger.i(TAG, "Vector layers metadata: $vectorLayers")
 
-            mainHandler.post {
-                Toast.makeText(
-                    context,
-                    "📦 $tileCount тайлов, z=$minZoom-$maxZoom\nФормат: $format",
-                    Toast.LENGTH_LONG
-                ).show()
-            }
             return true
         } catch (e: Exception) {
-            Log.e(TAG, "❌ Failed to open database", e)
             FileLogger.e(TAG, "Failed to open database", e)
-            mainHandler.post {
-                Toast.makeText(context, "❌ Ошибка базы: ${e.message}", Toast.LENGTH_LONG).show()
-            }
             return false
         }
     }
@@ -142,8 +131,7 @@ class MbtilesTileServer(
                 response
             }
         } catch (e: Exception) {
-            Log.e(TAG, "❌ Error serving tile", e)
-            FileLogger.e(TAG, "Error serving tile", e)
+            FileLogger.e(TAG, "❌ Error serving tile", e)
             newFixedLengthResponse(Response.Status.INTERNAL_ERROR, "text/plain", e.message)
         }
     }
@@ -163,7 +151,7 @@ class MbtilesTileServer(
             cursor.close()
             return null
         } catch (e: Exception) {
-            Log.e(TAG, "❌ Error getting tile", e)
+            FileLogger.e(TAG, "❌ Error getting tile", e)
             return null
         }
     }
@@ -249,9 +237,9 @@ class MbtilesTileServer(
         try {
             db?.close()
             stop()
-            Log.d(TAG, "Server stopped")
+            FileLogger.d(TAG, "Server stopped")
         } catch (e: Exception) {
-            Log.e(TAG, "Error stopping server", e)
+            FileLogger.e(TAG, "Error stopping server", e)
         }
     }
 }

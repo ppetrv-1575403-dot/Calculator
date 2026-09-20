@@ -37,18 +37,18 @@ object MapDownloadManager {
 
     fun startDownload(context: Context, region: OfflineRegion) {
         if (_state.value.isDownloading) {
-            toast(context, "⚠️ Загрузка уже идёт")
+            FileLogger.w("", "⚠️ Загрузка уже идёт")
             return
         }
 
         // Проверяем, есть ли ссылка на векторные тайлы
         val tilesUrl = region.vectorTilesUrl.takeIf { it.isNotBlank() }
         if (tilesUrl == null) {
-            toast(context, "❌ Для региона «${region.name}» не настроена ссылка на карту")
+            FileLogger.e("", "❌ Для региона «${region.name}» не настроена ссылка на карту")
             return
         }
 
-        toast(context, "🚀 Начинаем загрузку: ${region.name}")
+        FileLogger.w("", "🚀 Начинаем загрузку: ${region.name}")
 
         downloadJob = CoroutineScope(Dispatchers.IO + SupervisorJob()).launch {
             _state.value = DownloadState(regionId = region.id, isDownloading = true)
@@ -61,15 +61,15 @@ object MapDownloadManager {
                     )
                 }
                 _state.value = DownloadState(completed = true)
-                toast(context, "✅ Карта «${region.name}» загружена!", true)
+                FileLogger.i("", "✅ Карта «${region.name}» загружена!")
             } catch (e: CancellationException) {
                 _state.value = DownloadState()
-                toast(context, "⏹️ Загрузка отменена")
+                FileLogger.e("", "⏹️ Загрузка отменена")
                 throw e
             } catch (e: Exception) {
-                Log.e(TAG, "Download failed", e)
+                //Log.e(TAG, "Download failed", e)
                 _state.value = DownloadState(error = e.message)
-                toast(context, "❌ Ошибка: ${e.message}", true)
+                FileLogger.e("", "❌ Ошибка: ${e.message}")
             }
         }
     }
@@ -117,7 +117,7 @@ object MapDownloadManager {
 
         val totalSize = connection.contentLengthLong
         val sizeMb = if (totalSize > 0) totalSize / 1024 / 1024 else 0
-        toast(context, "📦 Размер файла: ${if (sizeMb > 0) "$sizeMb МБ" else "неизвестен"}")
+        FileLogger.i("", "📦 Размер файла: ${if (sizeMb > 0) "$sizeMb МБ" else "неизвестен"}")
 
         var downloaded = 0L
         var lastToastPercent = 0
@@ -140,9 +140,9 @@ object MapDownloadManager {
                         if (percent >= lastToastPercent + 10) {
                             lastToastPercent = percent
                             val downloadedMb = downloaded / 1024 / 1024
-                            mainHandler.post {
-                                Toast.makeText(context, "📥 $percent% (${downloadedMb} МБ)", Toast.LENGTH_SHORT).show()
-                            }
+                            //mainHandler.post {
+                            //    Toast.makeText(context, "📥 $percent% (${downloadedMb} МБ)", Toast.LENGTH_SHORT).show()
+                            //}
                         }
                     }
                     output.flush()
@@ -163,6 +163,6 @@ object MapDownloadManager {
         tempFile.renameTo(targetFile)
 
         val finalMb = targetFile.length() / 1024 / 1024
-        toast(context, "💾 Сохранено: ${targetFile.name} ($finalMb МБ)")
+        FileLogger.i("", "💾 Сохранено: ${targetFile.name} ($finalMb МБ)")
     }
 }

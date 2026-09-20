@@ -18,11 +18,11 @@ object OfflineRouter {
     private var graphHopper: GraphHopper? = null
     private var currentRegionId: String? = null
 
-    private fun toast(context: Context, message: String) {
-        mainHandler.post {
-            Toast.makeText(context, message, Toast.LENGTH_SHORT).show()
-        }
-    }
+    //private fun toast(context: Context, message: String) {
+    //    mainHandler.post {
+    //        Toast.makeText(context, message, Toast.LENGTH_SHORT).show()
+    //    }
+    //}
 
     fun getGraphsDir(context: Context): File {
         val dir = File(context.filesDir, GRAPHS_DIR)
@@ -64,7 +64,7 @@ object OfflineRouter {
 
             FileLogger.i(TAG, "Loading graph from: ${graphDir.absolutePath}")
             FileLogger.i(TAG, "Files: ${files.map { it.name }.joinToString(", ")}")
-            toast(context, "📦 Граф: ${files.size} файлов")
+            //toast(context, "📦 Граф: ${files.size} файлов")
 
             val hopper = GraphHopper()
             hopper.setGraphHopperLocation(graphDir.absolutePath)
@@ -136,10 +136,10 @@ object OfflineRouter {
             try {
                 val profiles = hopper.profiles
                 FileLogger.i(TAG, "✅ Graph loaded. Available profiles: ${profiles.joinToString { it.name }}")
-                toast(context, "✅ Граф: профили [${profiles.joinToString { it.name }}]")
+                //toast(context, "✅ Граф: профили [${profiles.joinToString { it.name }}]")
             } catch (e: Exception) {
                 FileLogger.i(TAG, "✅ Graph loaded for $regionId")
-                toast(context, "✅ Граф загружен")
+                //toast(context, "✅ Граф загружен")
             }
             
             return null
