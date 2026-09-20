@@ -126,10 +126,10 @@ fun MapLibreMapScreen(
             
             val connectionEndLayer = LineLayer("connection_end_layer", "connection_end_source").withProperties(
                 PropertyFactory.lineColor("#9E9E9E"),
-                PropertyFactory.lineWidth(5f),
+                PropertyFactory.lineWidth(8f),
                 PropertyFactory.lineCap("round"),
                 PropertyFactory.lineJoin("round"),
-                PropertyFactory.lineOpacity(0.7f)
+                PropertyFactory.lineOpacity(0.9f)
             )
 
             // Синяя линия от пользователя до начала маршрута
@@ -138,7 +138,7 @@ fun MapLibreMapScreen(
             
             val connectionStartLayer = LineLayer("connection_start_layer", "connection_start_source").withProperties(
                 PropertyFactory.lineColor("#1565C0"),
-                PropertyFactory.lineWidth(6f),
+                PropertyFactory.lineWidth(8f),
                 PropertyFactory.lineCap("round"),
                 PropertyFactory.lineJoin("round"),
                 PropertyFactory.lineOpacity(0.9f)
@@ -236,10 +236,10 @@ fun MapLibreMapScreen(
         }
     }
 
-    // Роутинг — обновляется каждые 5 секунд
-    LaunchedEffect(target) {
+    // Роутинг — обновляется каждые 5 секунд И мгновенно при смене транспорта
+    LaunchedEffect(target, transportMode) {
         val t = target ?: return@LaunchedEffect
-        FileLogger.i("Route", "Routing loop started for target: ${t.name}")
+        FileLogger.i("Route", "Routing loop started for target: ${t.name}, transport=$transportMode")
         
         val region = OfflineRegions.findRegionForPoint(t.latitude, t.longitude)
             ?: currentLocation?.let { OfflineRegions.findRegionForPoint(it.latitude, it.longitude) }
@@ -351,7 +351,7 @@ fun MapLibreMapScreen(
                     
                     // Синяя линия от пользователя до начала маршрута
                     val distFromUser = distanceBetween(cur.latitude, cur.longitude, firstPoint.first, firstPoint.second)
-                    if (distFromUser > 30) {
+                    if (distFromUser > 0) {
                         connectionStartPoints = listOf(
                             Pair(cur.latitude, cur.longitude),
                             firstPoint
@@ -362,7 +362,7 @@ fun MapLibreMapScreen(
                     
                     // Серая линия от конца маршрута до цели
                     val distToTarget = distanceBetween(lastPoint.first, lastPoint.second, t.latitude, t.longitude)
-                    if (distToTarget > 30) {
+                    if (distToTarget > 0) {
                         connectionEndPoints = listOf(lastPoint, Pair(t.latitude, t.longitude))
                     } else {
                         connectionEndPoints = emptyList()
@@ -392,73 +392,55 @@ fun MapLibreMapScreen(
             delay(5000)
         }
     }
-
     // Обновление маршрутов на карте
-    LaunchedEffect(routePoints, connectionStartPoints, connectionEndPoints) {
-        FileLogger.d("Route", "LaunchedEffect: route=${routePoints.size}, connStart=${connectionStartPoints.size}, connEnd=${connectionEndPoints.size}")
-        
-        try {
-            val map = mapRef
-            val style = map?.style
-            
-            if (map == null || style == null) {
-                FileLogger.w("Route", "⚠️ Map or Style is NULL, skipping")
-                return@LaunchedEffect
-            }
-            
-            val routeSourceInStyle = style.getSource("route_source")
-            val connStartSourceInStyle = style.getSource("connection_start_source")
-            val connEndSourceInStyle = style.getSource("connection_end_source")
-            
-            if (routeSourceInStyle == null || connStartSourceInStyle == null || connEndSourceInStyle == null) {
-                FileLogger.w("Route", "⚠️ Sources missing! Re-adding...")
-                setupMapStyle(style, "recovery")
-                return@LaunchedEffect
-            }
-            
-            // Основной маршрут
-            if (routePoints.isNotEmpty()) {
-                delay(300)
-                val source = style.getSourceAs<GeoJsonSource>("route_source")
-                source?.setGeoJson(pointsToLineString(routePoints))
-                map.triggerRepaint()
-                FileLogger.i("Route", "✅ Route APPLIED: ${routePoints.size} pts")
-            } else {
-                val source = style.getSourceAs<GeoJsonSource>("route_source")
-                source?.setGeoJson("""{"type":"Feature","geometry":{"type":"LineString","coordinates":[]}}""")
-                map.triggerRepaint()
-            }
-            
-            // Синяя линия от пользователя до начала маршрута
-            if (connectionStartPoints.isNotEmpty()) {
-                delay(300)
-                val source = style.getSourceAs<GeoJsonSource>("connection_start_source")
-                source?.setGeoJson(pointsToLineString(connectionStartPoints))
-                map.triggerRepaint()
-                FileLogger.i("Route", "✅ Connection START (blue) APPLIED: ${connectionStartPoints.size} pts")
-            } else {
-                val source = style.getSourceAs<GeoJsonSource>("connection_start_source")
-                source?.setGeoJson("""{"type":"Feature","geometry":{"type":"LineString","coordinates":[]}}""")
-                map.triggerRepaint()
-            }
-            
-            // Серая линия от конца маршрута до цели
-            if (connectionEndPoints.isNotEmpty()) {
-                delay(300)
-                val source = style.getSourceAs<GeoJsonSource>("connection_end_source")
-                source?.setGeoJson(pointsToLineString(connectionEndPoints))
-                map.triggerRepaint()
-                FileLogger.i("Route", "✅ Connection END (gray) APPLIED: ${connectionEndPoints.size} pts")
-            } else {
-                val source = style.getSourceAs<GeoJsonSource>("connection_end_source")
-                source?.setGeoJson("""{"type":"Feature","geometry":{"type":"LineString","coordinates":[]}}""")
-                map.triggerRepaint()
-            }
-        } catch (e: Exception) {
-            FileLogger.e("Route", "Failed to update route", e)
+    LaunchedEffect(routePoints, connectionStartPoints, connectionEndPoints, routeMode, transportMode) {
+        val map = mapRef
+        val style = map?.style
+        if (map == null || style == null) {
+            FileLogger.w("Route", "⚠️ Map or Style is NULL, skipping")
+            return@LaunchedEffect
         }
-    }
+        if (style.getSource("route_source") == null) {
+            FileLogger.w("Route", "⚠️ Sources missing! Re-adding...")
+            setupMapStyle(style, "recovery")
+            return@LaunchedEffect
+        }
 
+        // Цвет по режиму: пешком = синий, машина = оранжевый, прямая = серый
+        val routeColor = when {
+            routeMode == "direct" -> "#9E9E9E"
+            transportMode == "car" -> "#E65100"
+            else -> "#1565C0"
+        }
+
+        val routeSource = style.getSourceAs<GeoJsonSource>("route_source")
+        if (routePoints.isNotEmpty()) {
+            routeSource?.setGeoJson(pointsToLineString(routePoints))
+            FileLogger.i("Route", "✅ Route APPLIED [$transportMode/$routeColor]: ${routePoints.size} pts, first=${routePoints.first()}, last=${routePoints.last()}")
+        } else {
+            routeSource?.setGeoJson("""{"type":"Feature","geometry":{"type":"LineString","coordinates":[]}}""")
+        }
+        (style.getLayer("route_layer") as? LineLayer)?.setProperties(PropertyFactory.lineColor(routeColor))
+        (style.getLayer("connection_start_layer") as? LineLayer)?.setProperties(PropertyFactory.lineColor(routeColor))
+
+        val startSource = style.getSourceAs<GeoJsonSource>("connection_start_source")
+        if (connectionStartPoints.isNotEmpty()) {
+            startSource?.setGeoJson(pointsToLineString(connectionStartPoints))
+        } else {
+            startSource?.setGeoJson("""{"type":"Feature","geometry":{"type":"LineString","coordinates":[]}}""")
+        }
+
+        val endSource = style.getSourceAs<GeoJsonSource>("connection_end_source")
+        if (connectionEndPoints.isNotEmpty()) {
+            endSource?.setGeoJson(pointsToLineString(connectionEndPoints))
+            FileLogger.i("Route", "✅ Connection END (gray) APPLIED: ${connectionEndPoints.size} pts")
+        } else {
+            endSource?.setGeoJson("""{"type":"Feature","geometry":{"type":"LineString","coordinates":[]}}""")
+        }
+
+        map.triggerRepaint()
+    }
+    
     // Обновление позиции пользователя и центрирование
     LaunchedEffect(currentLocation) {
         currentLocation?.let { loc ->

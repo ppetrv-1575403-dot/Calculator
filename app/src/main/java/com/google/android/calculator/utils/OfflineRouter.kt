@@ -10,9 +10,6 @@ import com.graphhopper.GHResponse
 import com.graphhopper.config.Profile
 import java.io.File
 
-/**
- * Оффлайн-роутинг через GraphHopper.
- */
 object OfflineRouter {
     private const val TAG = "OfflineRouter"
     private const val GRAPHS_DIR = "graphs"
@@ -40,7 +37,6 @@ object OfflineRouter {
     fun isGraphDownloaded(context: Context, regionId: String): Boolean {
         val graphDir = getGraphDir(context, regionId)
         if (!graphDir.exists()) return false
-        
         val files = graphDir.listFiles() ?: return false
         return files.isNotEmpty()
     }
@@ -68,15 +64,23 @@ object OfflineRouter {
 
             FileLogger.i(TAG, "Loading graph from: ${graphDir.absolutePath}")
             FileLogger.i(TAG, "Files: ${files.map { it.name }.joinToString(", ")}")
-            
             toast(context, "📦 Граф: ${files.size} файлов")
 
             val hopper = GraphHopper()
             hopper.setGraphHopperLocation(graphDir.absolutePath)
             
-            // Явно указываем профили, которые должны совпадать с графом
-            val carProfile = Profile("car").setVehicle("car").setWeighting("fastest")
-            val footProfile = Profile("foot").setVehicle("foot").setWeighting("fastest")
+            // ⭐ ВАЖНО: профили должны ТОЧНО совпадать с конфигом сборки графа!
+            // В графе: car=fastest+turn_costs, foot=shortest+no_turn_costs
+            val carProfile = Profile("car")
+                .setVehicle("car")
+                .setWeighting("fastest")
+                .setTurnCosts(true)
+            val footProfile = Profile("foot")
+                .setVehicle("foot")
+                .setWeighting("shortest")
+                .setTurnCosts(false)
+            
+            FileLogger.i(TAG, "Setting profiles: car(fastest,tc=true), foot(shortest,tc=false)")
             hopper.setProfiles(listOf(carProfile, footProfile))
             
             var loadException: Exception? = null
@@ -88,8 +92,8 @@ object OfflineRouter {
                 loadException = e
                 FileLogger.e(TAG, "load() failed", e)
                 
-                // Если профили не совпадают — удаляем граф и сообщаем
-                if (e.message?.contains("Profiles do not match") == true) {
+                if (e.message?.contains("Profiles do not match") == true ||
+                    e.message?.contains("not found") == true) {
                     FileLogger.w(TAG, "Deleting incompatible graph")
                     graphDir.deleteRecursively()
                     return "Граф несовместим — удалён. Скачайте заново."
@@ -108,7 +112,8 @@ object OfflineRouter {
                     FileLogger.e(TAG, "importOrLoad() also failed", e)
                     loadException = e
                     
-                    if (e.message?.contains("Profiles do not match") == true) {
+                    if (e.message?.contains("Profiles do not match") == true ||
+                        e.message?.contains("not found") == true) {
                         graphDir.deleteRecursively()
                         return "Граф несовместим — удалён. Скачайте заново."
                     }
@@ -127,8 +132,15 @@ object OfflineRouter {
             graphHopper = hopper
             currentRegionId = regionId
 
-            FileLogger.i(TAG, "✅ Graph loaded for $regionId")
-            toast(context, "✅ Граф загружен в память")
+            // ⭐ ДИАГНОСТИКА: логируем загруженные профили
+            try {
+                val profiles = hopper.profiles
+                FileLogger.i(TAG, "✅ Graph loaded. Available profiles: ${profiles.joinToString { it.name }}")
+                toast(context, "✅ Граф: профили [${profiles.joinToString { it.name }}]")
+            } catch (e: Exception) {
+                FileLogger.i(TAG, "✅ Graph loaded for $regionId")
+                toast(context, "✅ Граф загружен")
+            }
             
             return null
         } catch (e: NoClassDefFoundError) {
@@ -155,17 +167,30 @@ object OfflineRouter {
         toLat: Double, toLon: Double,
         vehicle: String
     ): List<Pair<Double, Double>>? {
-        val hopper = graphHopper ?: return null
+        val hopper = graphHopper ?: run {
+            FileLogger.e(TAG, "getRoute called but graphHopper is null")
+            return null
+        }
+
+        // ⭐ Проверка, что профиль вообще существует
+        val available = try { hopper.profiles.map { it.name } } catch (e: Exception) { emptyList() }
+        FileLogger.d(TAG, "Requested vehicle='$vehicle', available profiles: $available")
+        
+        val actualVehicle = if (vehicle in available) vehicle else {
+            FileLogger.w(TAG, "⚠️ Vehicle '$vehicle' not available, falling back to 'car'")
+            "car"
+        }
 
         return try {
             val request = GHRequest(fromLat, fromLon, toLat, toLon)
-                .setProfile(vehicle)
+                .setProfile(actualVehicle)
                 .setLocale(java.util.Locale.US)
-
+  
+            FileLogger.d(TAG, "Routing with profile='$actualVehicle'")
             val response: GHResponse = hopper.route(request)
 
             if (response.hasErrors()) {
-                FileLogger.e(TAG, "Route errors: ${response.errors}")
+                FileLogger.e(TAG, "Route errors for '$actualVehicle': ${response.errors.map { it.message }}")
                 return null
             }
 
@@ -177,10 +202,10 @@ object OfflineRouter {
                 points.add(Pair(point.lat, point.lon))
             }
 
-            FileLogger.d(TAG, "✅ Route found: ${points.size} points, distance=${path.distance}m")
+            FileLogger.i(TAG, "✅ Route[$actualVehicle]: ${points.size} pts, ${path.distance.toInt()}m, ${path.time/1000}s")
             points
         } catch (e: Exception) {
-            FileLogger.e(TAG, "❌ Route failed", e)
+            FileLogger.e(TAG, "❌ Route failed for '$vehicle'", e)
             null
         }
     }
@@ -193,14 +218,14 @@ object OfflineRouter {
         val hopper = graphHopper ?: return null
 
         return try {
+            val actualVehicle = if (hopper.profiles.any { it.name == vehicle }) vehicle else "car"
             val request = GHRequest(fromLat, fromLon, toLat, toLon)
-                .setProfile(vehicle)
+                .setProfile(actualVehicle)
                 .setLocale(java.util.Locale.US)
 
+
             val response = hopper.route(request)
-
             if (response.hasErrors()) return null
-
             response.best.distance
         } catch (e: Exception) {
             FileLogger.e(TAG, "Distance calc failed", e)
