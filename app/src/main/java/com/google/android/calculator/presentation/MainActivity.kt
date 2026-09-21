@@ -21,10 +21,8 @@ import com.google.android.calculator.di.AppContainer
 import com.google.android.calculator.domain.usecase.ClearCacheUseCase
 import com.google.android.calculator.presentation.theme.VaultTheme
 import com.google.android.calculator.presentation.AppNavigator
-import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
 import org.maplibre.android.MapLibre
 
 import com.google.android.calculator.R
@@ -33,7 +31,6 @@ class MainActivity : ComponentActivity() {
 
     private lateinit var appContainer: AppContainer
     private lateinit var clearCacheUseCase: ClearCacheUseCase
-    private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
     private var isVaultOpen = false
 
     private val screenOffReceiver = object : BroadcastReceiver() {
@@ -122,7 +119,7 @@ class MainActivity : ComponentActivity() {
     }
 
     /**
-     * Единая функция очистки: удаляет кэш если хранилище открыто,
+     * Единая функция очистки: удаляет кэш если хранилище было открыто,
      * и ВСЕГДА убирает приложение из списка недавних.
      */
     private fun cleanupAndRemoveFromRecents() {
@@ -132,10 +129,12 @@ class MainActivity : ComponentActivity() {
             return
         }
 
-        // Если хранилище было открыто — очищаем кэш
+        // Если хранилище было открыто — очищаем кэш СИНХРОННО, до finishAndRemoveTask().
+        // Раньше очистка запускалась асинхронной корутиной и ничего не гарантировала —
+        // приложение могло уйти в фон/процесс завершиться раньше, чем она успевала отработать.
         if (isVaultOpen) {
             Log.d("MainActivity", "Vault was open, clearing cache")
-            serviceScope.launch(Dispatchers.IO) {
+            runBlocking(Dispatchers.IO) {
                 clearCacheUseCase()
             }
         }

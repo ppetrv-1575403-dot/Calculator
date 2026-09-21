@@ -24,6 +24,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import com.google.android.calculator.BuildConfig
 import com.google.android.calculator.R
 import com.google.android.calculator.di.AppContainer
 import com.google.android.calculator.domain.model.SavedLocation
@@ -174,9 +175,11 @@ fun VaultScreen(
                 if (viewModel.itemToMove != null) {
                     TextButton(onClick = { viewModel.cancelMove() }) { Text("Отмена") }
                 } else {
-                    // Кнопка логов
-                    IconButton(onClick = { showLogsDialog = true }) {
-                        Icon(Icons.Default.Description, "Логи")
+                    // Кнопка логов — только в debug-сборке, в релиз не попадает
+                    if (BuildConfig.DEBUG) {
+                        IconButton(onClick = { showLogsDialog = true }) {
+                            Icon(Icons.Default.Description, "Логи")
+                        }
                     }
                 }
             }
@@ -287,8 +290,8 @@ fun VaultScreen(
         )
     }
 
-    // Диалог с логами
-    if (showLogsDialog) {
+    // Диалог с логами — только debug
+    if (BuildConfig.DEBUG && showLogsDialog) {
         val logContent = remember { FileLogger.getLogContent(context) }
         val crashContent = remember { FileLogger.getCrashContent(context) }
         val scrollState = rememberScrollState()

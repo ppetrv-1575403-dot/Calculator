@@ -1,6 +1,7 @@
 package com.google.android.calculator.presentation
 
 import android.app.Application
+import com.google.android.calculator.BuildConfig
 import com.google.android.calculator.utils.CrashHandler
 import com.google.android.calculator.utils.FileLogger
 
@@ -16,9 +17,12 @@ class MyApplication : Application() {
     override fun onCreate() {
         super.onCreate()
         app = this
-        // Инициализируем логгер и обработчик крашей
-        FileLogger.init(this)
-        CrashHandler.init(this)
+        // Файловые логи и запись крашей на диск — только в debug-сборке.
+        // В релизе ничего не пишем на диск (в т.ч. на внешнее хранилище).
+        if (BuildConfig.DEBUG) {
+            FileLogger.init(this)
+            CrashHandler.init(this)
+        }
         
         appContainer = com.google.android.calculator.di.AppContainer(this)
     }
