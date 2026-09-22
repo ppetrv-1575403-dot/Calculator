@@ -26,6 +26,7 @@ import kotlinx.coroutines.runBlocking
 import org.maplibre.android.MapLibre
 
 import com.google.android.calculator.R
+import com.google.android.calculator.BuildConfig
 
 class MainActivity : ComponentActivity() {
 
@@ -45,10 +46,12 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
 
         // 1. Запрет скриншотов и записи экрана (в т.ч. чёрная превьюшка в recents)
-        window.setFlags(
-            android.view.WindowManager.LayoutParams.FLAG_SECURE,
-            android.view.WindowManager.LayoutParams.FLAG_SECURE
-        )
+        if(!BuildConfig.DEBUG) {
+            window.setFlags(
+                android.view.WindowManager.LayoutParams.FLAG_SECURE,
+                android.view.WindowManager.LayoutParams.FLAG_SECURE
+            )
+        }
         
         // 2. Маскировка записи в списке задач (если вдруг приложение мелькнёт в recents)
         val name = getString(R.string.app_name)
