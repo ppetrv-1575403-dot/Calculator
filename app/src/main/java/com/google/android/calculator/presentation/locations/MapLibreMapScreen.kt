@@ -54,6 +54,7 @@ import org.osmdroid.util.GeoPoint
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.TimeoutException
+import java.util.concurrent.atomic.AtomicReference
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -85,16 +86,20 @@ fun MapLibreMapScreen(
     var isOfflineMode by remember { mutableStateOf(false) }
     var currentRegionId by remember { mutableStateOf<String?>(null) }
     
-    // === UI: сворачиваемая панель и регенерация маршрута ===
     var isPanelExpanded by remember { mutableStateOf(false) }
     var panelHeight by remember { mutableStateOf(0.dp) }
     var routeRegenCounter by remember { mutableStateOf(0) }
+    var routeVersion by remember { mutableStateOf(0) }
+    
+    val currentLocationRef = remember { AtomicReference<Location?>(null) }
+    val routeStartRef = remember { AtomicReference<Pair<Double, Double>?>(null) }
+    val executorRef = remember { AtomicReference(Executors.newSingleThreadExecutor()) }
+    
+    val density = LocalDensity.current
     
     var mapRef by remember { mutableStateOf<MapLibreMap?>(null) }
     var userSourceRef by remember { mutableStateOf<GeoJsonSource?>(null) }
     var userLayerRef by remember { mutableStateOf<SymbolLayer?>(null) }
-    
-    val routeExecutor = remember { Executors.newSingleThreadExecutor() }
     
     var hasLocationPermission by remember {
         mutableStateOf(
@@ -127,7 +132,6 @@ fun MapLibreMapScreen(
 
             val topLayerId = style.layers.lastOrNull()?.id
 
-            // Серая линия от конца маршрута до цели
             val connectionEndSource = GeoJsonSource("connection_end_source")
             style.addSource(connectionEndSource)
             
@@ -139,7 +143,6 @@ fun MapLibreMapScreen(
                 PropertyFactory.lineOpacity(0.9f)
             )
 
-            // Синяя линия от пользователя до начала маршрута
             val connectionStartSource = GeoJsonSource("connection_start_source")
             style.addSource(connectionStartSource)
             
@@ -151,7 +154,6 @@ fun MapLibreMapScreen(
                 PropertyFactory.lineOpacity(0.9f)
             )
 
-            // Основной маршрут (синий, толще)
             val routeSource = GeoJsonSource("route_source")
             style.addSource(routeSource)
             
@@ -217,10 +219,8 @@ fun MapLibreMapScreen(
                 )
             }
             
-            // === ДИАГНОСТИКА КАРТЫ: список слоёв и источников стиля ===
             FileLogger.i("MapDiag", "[$logPrefix] Style layers (${style.layers.size}): ${style.layers.joinToString(", ") { it.id }}")
             FileLogger.i("MapDiag", "[$logPrefix] Style sources: ${style.sources.joinToString(", ") { it.id }}")
-            
             FileLogger.i("Map", "[$logPrefix] ✅ Style setup complete. Layers: ${style.layers.size}")
         } catch (e: Exception) {
             FileLogger.e("Map", "[$logPrefix] Failed to setup style", e)
@@ -239,21 +239,18 @@ fun MapLibreMapScreen(
                 OfflineMapManager.stopServer(regionId)
             }
             OfflineRouter.unloadGraph()
-            routeExecutor.shutdownNow()
+            executorRef.get().shutdownNow()
         }
     }
 
-    // Роутинг — обновляется каждые 5 секунд, при смене транспорта и при регенерации
     LaunchedEffect(target, transportMode, routeRegenCounter) {
         val t = target ?: return@LaunchedEffect
         FileLogger.i("Route", "Routing loop started for target: ${t.name}, transport=$transportMode")
         
         val region = OfflineRegions.findRegionForPoint(t.latitude, t.longitude)
-            ?: currentLocation?.let { OfflineRegions.findRegionForPoint(it.latitude, it.longitude) }
+            ?: currentLocationRef.get()?.let { OfflineRegions.findRegionForPoint(it.latitude, it.longitude) }
         
-        val hasOfflineGraph = region != null && OfflineRouter.isGraphDownloaded(context, region.id)
-        
-        if (hasOfflineGraph && region != null) {
+        val offlineActive = if (region != null && OfflineRouter.isGraphDownloaded(context, region.id)) {
             val loadError = withContext(Dispatchers.IO) {
                 OfflineRouter.loadGraph(context, region.id)
             }
@@ -261,147 +258,157 @@ fun MapLibreMapScreen(
             if (loadError != null) {
                 isOfflineRouting = false
                 FileLogger.e("Route", "Graph load failed: $loadError")
+                false
             } else {
                 isOfflineRouting = true
                 FileLogger.i("Route", "Offline routing active")
+                true
             }
         } else {
             isOfflineRouting = false
             FileLogger.i("Route", "Using online routing (no graph)")
+            false
         }
         
         while (true) {
-            val cur = currentLocation
-            val currentTransport = transportMode
-            val useOffline = isOfflineRouting
-            
-            if (cur == null) {
-                FileLogger.w("Route", "Waiting for GPS location...")
-            } else {
-                isLoadingRoute = true
+            try {
+                val cur = currentLocationRef.get()
+                val currentTransport = transportMode
+                val useOffline = offlineActive
                 
-                var points: List<Pair<Double, Double>>? = null
-                var distance: Double? = null
-                var duration: Double? = null
-                var mode: String = ""
-                
-                if (useOffline) {
-                    val vehicle = if (currentTransport == "car") "car" else "foot"
+                if (cur == null) {
+                    FileLogger.w("Route", "Waiting for GPS location...")
+                } else {
+                    isLoadingRoute = true
                     
-                    val future = routeExecutor.submit<Pair<List<Pair<Double, Double>>?, Double?>?> {
-                        val pts = OfflineRouter.getRoute(
-                            cur.latitude, cur.longitude,
-                            t.latitude, t.longitude,
-                            vehicle
-                        )
-                        val dist = if (pts != null) {
-                            OfflineRouter.getRouteDistance(
+                    var points: List<Pair<Double, Double>>? = null
+                    var distance: Double? = null
+                    var duration: Double? = null
+                    var mode: String = ""
+                    
+                    if (useOffline) {
+                        val vehicle = if (currentTransport == "car") "car" else "foot"
+                        
+                        val future = executorRef.get().submit<Pair<List<Pair<Double, Double>>?, Double?>?> {
+                            val pts = OfflineRouter.getRoute(
                                 cur.latitude, cur.longitude,
                                 t.latitude, t.longitude,
                                 vehicle
                             )
-                        } else null
-                        Pair(pts, dist)
-                    }
-                    
-                    try {
-                        val routeResult = future.get(30, TimeUnit.SECONDS)
-                        val pts: List<Pair<Double, Double>>? = routeResult?.first
-                        val dist: Double? = routeResult?.second
-                        
-                        if (pts != null && pts.isNotEmpty()) {
-                            points = pts
-                            distance = dist
-                            duration = dist?.let { d ->
-                                if (currentTransport == "car") d / (50.0 / 3.6) else d / (5.0 / 3.6)
-                            }
-                            mode = "offline"
-                            FileLogger.i("Route", "✅ Offline route: ${pts.size} points")
+                            val dist = if (pts != null) {
+                                OfflineRouter.getRouteDistance(
+                                    cur.latitude, cur.longitude,
+                                    t.latitude, t.longitude,
+                                    vehicle
+                                )
+                            } else null
+                            Pair(pts, dist)
                         }
-                    } catch (e: TimeoutException) {
-                        future.cancel(true)
-                        FileLogger.e("Route", "⏰ Route timeout (10s)!")
-                    } catch (e: Exception) {
-                        FileLogger.e("Route", "❌ Route failed: ${e.message}", e)
-                    }
-                } else {
-                    val route = withContext(Dispatchers.IO) {
+                        
                         try {
-                            val roadManager = OSRMRoadManager(context, "calculator_vault_app")
-                            when (currentTransport) {
-                                "foot" -> roadManager.setMean(OSRMRoadManager.MEAN_BY_FOOT)
-                                "car" -> roadManager.setMean(OSRMRoadManager.MEAN_BY_CAR)
-                                else -> roadManager.setMean(OSRMRoadManager.MEAN_BY_FOOT)
+                            val routeResult = future.get(10, TimeUnit.SECONDS)
+                            val pts: List<Pair<Double, Double>>? = routeResult?.first
+                            val dist: Double? = routeResult?.second
+                            
+                            if (pts != null && pts.isNotEmpty()) {
+                                points = pts
+                                distance = dist
+                                duration = dist?.let { d ->
+                                    if (currentTransport == "car") d / (50.0 / 3.6) else d / (5.0 / 3.6)
+                                }
+                                mode = "offline"
+                                FileLogger.i("Route", "✅ Offline route: ${pts.size} points")
                             }
-                            val wayPoints = arrayListOf(
-                                GeoPoint(cur.latitude, cur.longitude),
-                                GeoPoint(t.latitude, t.longitude)
+                        } catch (e: TimeoutException) {
+                            future.cancel(true)
+                            FileLogger.e("Route", "⏰ Route timeout (10s)! Recreating executor...")
+                            val old = executorRef.getAndSet(Executors.newSingleThreadExecutor())
+                            old.shutdownNow()
+                        } catch (e: Exception) {
+                            FileLogger.e("Route", "❌ Route failed: ${e.message}", e)
+                        }
+                    } else {
+                        val route = withContext(Dispatchers.IO) {
+                            try {
+                                val roadManager = OSRMRoadManager(context, "calculator_vault_app")
+                                when (currentTransport) {
+                                    "foot" -> roadManager.setMean(OSRMRoadManager.MEAN_BY_FOOT)
+                                    "car" -> roadManager.setMean(OSRMRoadManager.MEAN_BY_CAR)
+                                    else -> roadManager.setMean(OSRMRoadManager.MEAN_BY_FOOT)
+                                }
+                                val wayPoints = arrayListOf(
+                                    GeoPoint(cur.latitude, cur.longitude),
+                                    GeoPoint(t.latitude, t.longitude)
+                                )
+                                roadManager.getRoad(wayPoints)
+                            } catch (e: Exception) { null }
+                        }
+                        
+                        if (route != null && route.mRouteHigh.isNotEmpty()) {
+                            points = route.mRouteHigh.map { Pair(it.latitude, it.longitude) }
+                            distance = route.mLength * 1000
+                            duration = route.mDuration
+                            mode = "online"
+                            FileLogger.i("Route", "✅ Online route: ${points.size} points")
+                        }
+                    }
+                    
+                    if (points != null && points.isNotEmpty()) {
+                        routePoints = points
+                        
+                        val firstPoint = points.first()
+                        val lastPoint = points.last()
+                        
+                        val distFromUser = distanceBetween(cur.latitude, cur.longitude, firstPoint.first, firstPoint.second)
+                        if (distFromUser > 0) {
+                            connectionStartPoints = listOf(
+                                Pair(cur.latitude, cur.longitude),
+                                firstPoint
                             )
-                            roadManager.getRoad(wayPoints)
-                        } catch (e: Exception) { null }
-                    }
-                    
-                    if (route != null && route.mRouteHigh.isNotEmpty()) {
-                        points = route.mRouteHigh.map { Pair(it.latitude, it.longitude) }
-                        distance = route.mLength * 1000
-                        duration = route.mDuration
-                        mode = "online"
-                        FileLogger.i("Route", "✅ Online route: ${points.size} points")
-                    }
-                }
-                
-                if (points != null && points.isNotEmpty()) {
-                    routePoints = points
-                    
-                    val firstPoint = points.first()
-                    val lastPoint = points.last()
-                    
-                    // Синяя линия от пользователя до начала маршрута
-                    val distFromUser = distanceBetween(cur.latitude, cur.longitude, firstPoint.first, firstPoint.second)
-                    if (distFromUser > 0) {
-                        connectionStartPoints = listOf(
-                            Pair(cur.latitude, cur.longitude),
-                            firstPoint
-                        )
+                        } else {
+                            connectionStartPoints = emptyList()
+                        }
+                        
+                        val distToTarget = distanceBetween(lastPoint.first, lastPoint.second, t.latitude, t.longitude)
+                        if (distToTarget > 0) {
+                            connectionEndPoints = listOf(lastPoint, Pair(t.latitude, t.longitude))
+                        } else {
+                            connectionEndPoints = emptyList()
+                        }
+                        
+                        routeMode = mode
+                        routeDistance = distance
+                        routeDuration = duration
                     } else {
                         connectionStartPoints = emptyList()
+                        connectionEndPoints = listOf(
+                            Pair(cur.latitude, cur.longitude),
+                            Pair(t.latitude, t.longitude)
+                        )
+                        distance = distanceBetween(cur.latitude, cur.longitude, t.latitude, t.longitude)
+                        duration = distance?.let { d ->
+                            if (currentTransport == "car") d / (50.0 / 3.6) else d / (5.0 / 3.6)
+                        }
+                        routeMode = "direct"
+                        routeDistance = distance
+                        routeDuration = duration
                     }
                     
-                    // Серая линия от конца маршрута до цели
-                    val distToTarget = distanceBetween(lastPoint.first, lastPoint.second, t.latitude, t.longitude)
-                    if (distToTarget > 0) {
-                        connectionEndPoints = listOf(lastPoint, Pair(t.latitude, t.longitude))
-                    } else {
-                        connectionEndPoints = emptyList()
-                    }
-                    
-                    routeMode = mode
-                    routeDistance = distance
-                    routeDuration = duration
-                } else {
-                    // Маршрут не построен — серая прямая от пользователя до цели
-                    connectionStartPoints = emptyList()
-                    connectionEndPoints = listOf(
-                        Pair(cur.latitude, cur.longitude),
-                        Pair(t.latitude, t.longitude)
-                    )
-                    distance = distanceBetween(cur.latitude, cur.longitude, t.latitude, t.longitude)
-                    duration = distance?.let { d ->
-                        if (currentTransport == "car") d / (50.0 / 3.6) else d / (5.0 / 3.6)
-                    }
-                    routeMode = "direct"
-                    routeDistance = distance
-                    routeDuration = duration
+                    isLoadingRoute = false
+                    routeVersion++
+                    FileLogger.d("Route", "♥ loop alive: cur=${"%.5f".format(cur.latitude)}, ${"%.5f".format(cur.longitude)}, mode=$routeMode, pts=${routePoints.size}")
                 }
-                
-                isLoadingRoute = false
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                FileLogger.e("Route", "❌ Loop iteration crashed, continuing", e)
             }
             delay(5000)
         }
     }
 
-    // Обновление маршрутов на карте
-    LaunchedEffect(routePoints, connectionStartPoints, connectionEndPoints, routeMode, transportMode) {
+    LaunchedEffect(routePoints, connectionStartPoints, connectionEndPoints, routeMode, transportMode, routeVersion, routeRegenCounter) {
+      try {
         val map = mapRef
         val style = map?.style
         if (map == null || style == null) {
@@ -414,7 +421,6 @@ fun MapLibreMapScreen(
             return@LaunchedEffect
         }
 
-        // Цвет по режиму: пешком = синий, машина = оранжевый, прямая = серый
         val routeColor = when {
             routeMode == "direct" -> "#9E9E9E"
             transportMode == "car" -> "#E65100"
@@ -428,6 +434,8 @@ fun MapLibreMapScreen(
         } else {
             routeSource?.setGeoJson("""{"type":"Feature","geometry":{"type":"LineString","coordinates":[]}}""")
         }
+        routeStartRef.set(routePoints.firstOrNull())
+        
         (style.getLayer("route_layer") as? LineLayer)?.setProperties(PropertyFactory.lineColor(routeColor))
         (style.getLayer("connection_start_layer") as? LineLayer)?.setProperties(PropertyFactory.lineColor(routeColor))
 
@@ -447,11 +455,15 @@ fun MapLibreMapScreen(
         }
 
         map.triggerRepaint()
+      } catch (e: Exception) {
+        FileLogger.e("Route", "❌ Update effect failed", e)
+      }
     }
     
-    // Обновление позиции пользователя и центрирование
-    LaunchedEffect(currentLocation) {
+    LaunchedEffect(currentLocation, routeRegenCounter) {
         currentLocation?.let { loc ->
+            currentLocationRef.set(loc)
+            
             val style = mapRef?.style
             val source = style?.getSourceAs<GeoJsonSource>("user_source")
             source?.setGeoJson(
@@ -467,6 +479,19 @@ fun MapLibreMapScreen(
                     if (currentTarget == null || currentTarget.distanceTo(targetLatLng) > 50) {
                         map.animateCamera(CameraUpdateFactory.newLatLng(targetLatLng), 1000)
                     }
+                }
+            }
+            
+            val routeStart = routeStartRef.get()
+            if (routeStart != null) {
+                val distToRouteStart = distanceBetween(
+                    loc.latitude, loc.longitude,
+                    routeStart.first, routeStart.second
+                )
+                connectionStartPoints = if (distToRouteStart > 0) {
+                    listOf(Pair(loc.latitude, loc.longitude), routeStart)
+                } else {
+                    emptyList()
                 }
             }
         }
@@ -513,8 +538,7 @@ fun MapLibreMapScreen(
 
     val targetLoc = target?.let { Location("target").apply { latitude = it.latitude; longitude = it.longitude } }
     val distance = currentLocation?.let { c -> targetLoc?.let { t -> c.distanceTo(t) } }
-    val density = LocalDensity.current
-    
+
     Scaffold(
         contentWindowInsets = WindowInsets(0, 0, 0, 0),
         topBar = {
@@ -537,7 +561,7 @@ fun MapLibreMapScreen(
                         mapRef = map
                         
                         val region = target?.let { OfflineRegions.findRegionForPoint(it.latitude, it.longitude) }
-                            ?: currentLocation?.let { OfflineRegions.findRegionForPoint(it.latitude, it.longitude) }
+                            ?: currentLocationRef.get()?.let { OfflineRegions.findRegionForPoint(it.latitude, it.longitude) }
 
                         val tileSourceUrl = if (region != null) {
                             currentRegionId = region.id
@@ -555,13 +579,11 @@ fun MapLibreMapScreen(
                             setupMapStyle(style, "initial")
                         }
 
-                        // === ДИАГНОСТИКА КАРТЫ ===
                         map.addOnCameraIdleListener {
                             val pos = map.cameraPosition
                             FileLogger.d("MapDiag", "📍 Camera: zoom=${"%.2f".format(pos.zoom)}, target=${pos.target}")
                         }
 
-                        // Если этот блок даст ошибку сборки — просто удали его (3 строки)
                         mapView.addOnDidFinishLoadingStyleListener {
                             FileLogger.i("MapDiag", "🎨 Style finished loading")
                         }
@@ -580,7 +602,6 @@ fun MapLibreMapScreen(
                 modifier = Modifier.fillMaxSize()
             )
 
-            // === FAB-кнопки: всегда над панелью ===
             Column(
                 modifier = Modifier
                     .align(Alignment.BottomEnd)
@@ -592,7 +613,15 @@ fun MapLibreMapScreen(
                 FloatingActionButton(
                     onClick = {
                         autoCenterEnabled = !autoCenterEnabled
-                        if (autoCenterEnabled) hasCenteredOnUser = false
+                        if (autoCenterEnabled) {
+                            currentLocationRef.get()?.let { loc ->
+                                mapRef?.animateCamera(
+                                    CameraUpdateFactory.newLatLngZoom(LatLng(loc.latitude, loc.longitude), 16.5),
+                                    600
+                                )
+                            }
+                            hasCenteredOnUser = true
+                        }
                     },
                     shape = CircleShape,
                     containerColor = if (autoCenterEnabled) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.primaryContainer,
@@ -605,7 +634,15 @@ fun MapLibreMapScreen(
                 }
 
                 FloatingActionButton(
-                    onClick = { currentLocation?.let { hasCenteredOnUser = false } },
+                    onClick = {
+                        currentLocationRef.get()?.let { loc ->
+                            mapRef?.animateCamera(
+                                CameraUpdateFactory.newLatLngZoom(LatLng(loc.latitude, loc.longitude), 16.5),
+                                600
+                            )
+                            hasCenteredOnUser = true
+                        }
+                    },
                     shape = CircleShape,
                     containerColor = MaterialTheme.colorScheme.primaryContainer,
                     contentColor = MaterialTheme.colorScheme.onPrimaryContainer
@@ -614,7 +651,6 @@ fun MapLibreMapScreen(
                 }
             }
 
-            // === Нижняя панель: сворачиваемая ===
             Surface(
                 Modifier
                     .align(Alignment.BottomCenter)
@@ -630,7 +666,6 @@ fun MapLibreMapScreen(
                 color = MaterialTheme.colorScheme.surface.copy(alpha = 0.95f)
             ) {
                 Column(Modifier.padding(horizontal = 12.dp, vertical = 6.dp)) {
-                    // Верхняя строка — видна всегда
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Icon(
                             Icons.Default.Navigation, null,
@@ -663,16 +698,12 @@ fun MapLibreMapScreen(
                                 Icon(Icons.Default.Image, "Фото", Modifier.size(20.dp))
                             }
                         }
-                        // Кнопка регенерации маршрута
                         IconButton(onClick = {
-                            routePoints = emptyList()
-                            connectionStartPoints = emptyList()
-                            connectionEndPoints = emptyList()
+                            FileLogger.i("Route", "🔄 Regenerate requested by user")
                             routeRegenCounter++
                         }) {
                             Icon(Icons.Default.Refresh, "Перегенерировать маршрут", Modifier.size(20.dp))
                         }
-                        // Свернуть / развернуть
                         IconButton(onClick = { isPanelExpanded = !isPanelExpanded }) {
                             Icon(
                                 if (isPanelExpanded) Icons.Default.KeyboardArrowDown else Icons.Default.KeyboardArrowUp,
@@ -682,7 +713,6 @@ fun MapLibreMapScreen(
                         }
                     }
 
-                    // Раскрывающаяся часть
                     if (isPanelExpanded) {
                         HorizontalDivider(Modifier.padding(vertical = 6.dp))
 
@@ -695,9 +725,6 @@ fun MapLibreMapScreen(
                                 onClick = {
                                     if (transportMode != "foot") {
                                         transportMode = "foot"
-                                        routePoints = emptyList()
-                                        connectionStartPoints = emptyList()
-                                        connectionEndPoints = emptyList()
                                     }
                                 },
                                 label = { Text("Пешком", style = MaterialTheme.typography.bodySmall) },
@@ -715,9 +742,6 @@ fun MapLibreMapScreen(
                                 onClick = {
                                     if (transportMode != "car") {
                                         transportMode = "car"
-                                        routePoints = emptyList()
-                                        connectionStartPoints = emptyList()
-                                        connectionEndPoints = emptyList()
                                     }
                                 },
                                 label = { Text("Машина", style = MaterialTheme.typography.bodySmall) },
