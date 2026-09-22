@@ -13,6 +13,7 @@ import android.location.LocationListener
 import android.location.LocationManager
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
@@ -21,6 +22,7 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
@@ -86,13 +88,18 @@ fun MapLibreMapScreen(
     var isOfflineMode by remember { mutableStateOf(false) }
     var currentRegionId by remember { mutableStateOf<String?>(null) }
     
+    // === UI: сворачиваемая панель, регенерация, компас ===
     var isPanelExpanded by remember { mutableStateOf(false) }
     var panelHeight by remember { mutableStateOf(0.dp) }
     var routeRegenCounter by remember { mutableStateOf(0) }
     var routeVersion by remember { mutableStateOf(0) }
+    var deviceAzimuth by remember { mutableStateOf(0f) }
     
+    // === Свежие значения вне Compose-snapshot (для длинной корутины роутинга) ===
     val currentLocationRef = remember { AtomicReference<Location?>(null) }
     val routeStartRef = remember { AtomicReference<Pair<Double, Double>?>(null) }
+    
+    // === Самовосстанавливающийся executor для роутинга ===
     val executorRef = remember { AtomicReference(Executors.newSingleThreadExecutor()) }
     
     val density = LocalDensity.current
@@ -132,6 +139,7 @@ fun MapLibreMapScreen(
 
             val topLayerId = style.layers.lastOrNull()?.id
 
+            // Серая линия от конца маршрута до цели
             val connectionEndSource = GeoJsonSource("connection_end_source")
             style.addSource(connectionEndSource)
             
@@ -143,6 +151,7 @@ fun MapLibreMapScreen(
                 PropertyFactory.lineOpacity(0.9f)
             )
 
+            // Синяя линия от пользователя до начала маршрута
             val connectionStartSource = GeoJsonSource("connection_start_source")
             style.addSource(connectionStartSource)
             
@@ -154,6 +163,7 @@ fun MapLibreMapScreen(
                 PropertyFactory.lineOpacity(0.9f)
             )
 
+            // Основной маршрут
             val routeSource = GeoJsonSource("route_source")
             style.addSource(routeSource)
             
@@ -219,8 +229,10 @@ fun MapLibreMapScreen(
                 )
             }
             
+            // === ДИАГНОСТИКА КАРТЫ: список слоёв и источников стиля ===
             FileLogger.i("MapDiag", "[$logPrefix] Style layers (${style.layers.size}): ${style.layers.joinToString(", ") { it.id }}")
             FileLogger.i("MapDiag", "[$logPrefix] Style sources: ${style.sources.joinToString(", ") { it.id }}")
+            
             FileLogger.i("Map", "[$logPrefix] ✅ Style setup complete. Layers: ${style.layers.size}")
         } catch (e: Exception) {
             FileLogger.e("Map", "[$logPrefix] Failed to setup style", e)
@@ -247,7 +259,7 @@ fun MapLibreMapScreen(
             FileLogger.d("Map", "🎯 Target pin updated: ${t.name}")
         }
     }
-    
+
     DisposableEffect(Unit) {
         onDispose {
             currentRegionId?.let { regionId ->
@@ -258,6 +270,7 @@ fun MapLibreMapScreen(
         }
     }
 
+    // Роутинг — обновляется каждые 5 секунд, при смене транспорта и при регенерации
     LaunchedEffect(target, transportMode, routeRegenCounter) {
         val t = target ?: return@LaunchedEffect
         FileLogger.i("Route", "Routing loop started for target: ${t.name}, transport=$transportMode")
@@ -265,6 +278,7 @@ fun MapLibreMapScreen(
         val region = OfflineRegions.findRegionForPoint(t.latitude, t.longitude)
             ?: currentLocationRef.get()?.let { OfflineRegions.findRegionForPoint(it.latitude, it.longitude) }
         
+        // Определяем оффлайн-режим ОДИН раз до цикла (локальная переменная вместо чтения state в цикле)
         val offlineActive = if (region != null && OfflineRouter.isGraphDownloaded(context, region.id)) {
             val loadError = withContext(Dispatchers.IO) {
                 OfflineRouter.loadGraph(context, region.id)
@@ -287,6 +301,7 @@ fun MapLibreMapScreen(
         
         while (true) {
             try {
+                // === Свежая позиция через AtomicReference (не через Compose-snapshot) ===
                 val cur = currentLocationRef.get()
                 val currentTransport = transportMode
                 val useOffline = offlineActive
@@ -336,6 +351,7 @@ fun MapLibreMapScreen(
                             }
                         } catch (e: TimeoutException) {
                             future.cancel(true)
+                            // Поток мог зависнуть навсегда — пересоздаём executor
                             FileLogger.e("Route", "⏰ Route timeout (10s)! Recreating executor...")
                             val old = executorRef.getAndSet(Executors.newSingleThreadExecutor())
                             old.shutdownNow()
@@ -374,6 +390,7 @@ fun MapLibreMapScreen(
                         val firstPoint = points.first()
                         val lastPoint = points.last()
                         
+                        // Синяя линия от пользователя до начала маршрута
                         val distFromUser = distanceBetween(cur.latitude, cur.longitude, firstPoint.first, firstPoint.second)
                         if (distFromUser > 0) {
                             connectionStartPoints = listOf(
@@ -384,6 +401,7 @@ fun MapLibreMapScreen(
                             connectionStartPoints = emptyList()
                         }
                         
+                        // Серая линия от конца маршрута до цели
                         val distToTarget = distanceBetween(lastPoint.first, lastPoint.second, t.latitude, t.longitude)
                         if (distToTarget > 0) {
                             connectionEndPoints = listOf(lastPoint, Pair(t.latitude, t.longitude))
@@ -395,6 +413,7 @@ fun MapLibreMapScreen(
                         routeDistance = distance
                         routeDuration = duration
                     } else {
+                        // Маршрут не построен — серая прямая от пользователя до цели
                         connectionStartPoints = emptyList()
                         connectionEndPoints = listOf(
                             Pair(cur.latitude, cur.longitude),
@@ -410,18 +429,21 @@ fun MapLibreMapScreen(
                     }
                     
                     isLoadingRoute = false
-                    routeVersion++
+                    routeVersion++   // форсирует перерисовку даже если точки совпадают
+                    // === ПУЛЬС: видно, жив ли цикл и от какой точки строит ===
                     FileLogger.d("Route", "♥ loop alive: cur=${"%.5f".format(cur.latitude)}, ${"%.5f".format(cur.longitude)}, mode=$routeMode, pts=${routePoints.size}")
                 }
             } catch (e: kotlinx.coroutines.CancellationException) {
-                throw e
+                throw e   // штатная отмена эффекта — пробрасываем
             } catch (e: Exception) {
+                // Любая неожиданная ошибка НЕ убивает цикл
                 FileLogger.e("Route", "❌ Loop iteration crashed, continuing", e)
             }
             delay(5000)
         }
     }
 
+    // Обновление маршрутов на карте (с routeRegenCounter для гарантированной перерисовки)
     LaunchedEffect(routePoints, connectionStartPoints, connectionEndPoints, routeMode, transportMode, routeVersion, routeRegenCounter) {
       try {
         val map = mapRef
@@ -436,6 +458,7 @@ fun MapLibreMapScreen(
             return@LaunchedEffect
         }
 
+        // Цвет по режиму: пешком = синий, машина = оранжевый, прямая = серый
         val routeColor = when {
             routeMode == "direct" -> "#9E9E9E"
             transportMode == "car" -> "#E65100"
@@ -449,6 +472,7 @@ fun MapLibreMapScreen(
         } else {
             routeSource?.setGeoJson("""{"type":"Feature","geometry":{"type":"LineString","coordinates":[]}}""")
         }
+        // Запоминаем начало маршрута для живой линии (вне snapshot)
         routeStartRef.set(routePoints.firstOrNull())
         
         (style.getLayer("route_layer") as? LineLayer)?.setProperties(PropertyFactory.lineColor(routeColor))
@@ -475,8 +499,10 @@ fun MapLibreMapScreen(
       }
     }
     
+    // Обновление позиции пользователя, центрирование и живая линия до маршрута
     LaunchedEffect(currentLocation, routeRegenCounter) {
         currentLocation?.let { loc ->
+            // === Сохраняем свежую позицию вне snapshot ===
             currentLocationRef.set(loc)
             
             val style = mapRef?.style
@@ -497,6 +523,7 @@ fun MapLibreMapScreen(
                 }
             }
             
+            // === Живая прямая линия: пользователь -> начало маршрута ===
             val routeStart = routeStartRef.get()
             if (routeStart != null) {
                 val distToRouteStart = distanceBetween(
@@ -526,6 +553,10 @@ fun MapLibreMapScreen(
                 if (Math.abs(newAzimuth - lastAzimuth) > 10f) {
                     lastAzimuth = newAzimuth
                     userLayerRef?.setProperties(PropertyFactory.iconRotate(newAzimuth))
+                }
+                // Плавное вращение стрелки-компаса в панели (порог 3°, чтобы не дёргать UI)
+                if (Math.abs(newAzimuth - deviceAzimuth) > 3f) {
+                    deviceAzimuth = newAzimuth
                 }
             }
             override fun onAccuracyChanged(s: android.hardware.Sensor?, a: Int) {}
@@ -594,11 +625,13 @@ fun MapLibreMapScreen(
                             setupMapStyle(style, "initial")
                         }
 
+                        // === ДИАГНОСТИКА КАРТЫ ===
                         map.addOnCameraIdleListener {
                             val pos = map.cameraPosition
                             FileLogger.d("MapDiag", "📍 Camera: zoom=${"%.2f".format(pos.zoom)}, target=${pos.target}")
                         }
 
+                        // Если этот блок даст ошибку сборки — просто удали его (3 строки)
                         mapView.addOnDidFinishLoadingStyleListener {
                             FileLogger.i("MapDiag", "🎨 Style finished loading")
                         }
@@ -617,6 +650,7 @@ fun MapLibreMapScreen(
                 modifier = Modifier.fillMaxSize()
             )
 
+            // === FAB-кнопки: всегда над панелью ===
             Column(
                 modifier = Modifier
                     .align(Alignment.BottomEnd)
@@ -629,6 +663,7 @@ fun MapLibreMapScreen(
                     onClick = {
                         autoCenterEnabled = !autoCenterEnabled
                         if (autoCenterEnabled) {
+                            // Сразу центрируемся при включении
                             currentLocationRef.get()?.let { loc ->
                                 mapRef?.animateCamera(
                                     CameraUpdateFactory.newLatLngZoom(LatLng(loc.latitude, loc.longitude), 16.5),
@@ -650,6 +685,7 @@ fun MapLibreMapScreen(
 
                 FloatingActionButton(
                     onClick = {
+                        // Мгновенное центрирование на текущей позиции
                         currentLocationRef.get()?.let { loc ->
                             mapRef?.animateCamera(
                                 CameraUpdateFactory.newLatLngZoom(LatLng(loc.latitude, loc.longitude), 16.5),
@@ -666,6 +702,7 @@ fun MapLibreMapScreen(
                 }
             }
 
+            // === Нижняя панель: сворачиваемая ===
             Surface(
                 Modifier
                     .align(Alignment.BottomCenter)
@@ -681,13 +718,27 @@ fun MapLibreMapScreen(
                 color = MaterialTheme.colorScheme.surface.copy(alpha = 0.95f)
             ) {
                 Column(Modifier.padding(horizontal = 12.dp, vertical = 6.dp)) {
+                    // Верхняя строка — видна всегда
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        Icon(
-                            Icons.Default.Navigation, null,
-                            Modifier.size(24.dp),
-                            tint = androidx.compose.ui.graphics.Color(0xFF1565C0)
-                        )
-                        Spacer(Modifier.width(8.dp))
+                        // Компас-бейдж: стрелка крутится по азимуту устройства
+                        Box(
+                            Modifier
+                                .size(34.dp)
+                                .background(
+                                    MaterialTheme.colorScheme.primaryContainer,
+                                    CircleShape
+                                ),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Icon(
+                                Icons.Default.Navigation, null,
+                                Modifier
+                                    .size(20.dp)
+                                    .rotate(deviceAzimuth),
+                                tint = MaterialTheme.colorScheme.onPrimaryContainer
+                            )
+                        }
+                        Spacer(Modifier.width(10.dp))
                         Column(Modifier.weight(1f)) {
                             Text(
                                 when {
@@ -701,7 +752,7 @@ fun MapLibreMapScreen(
                             if (isPanelExpanded) {
                                 target?.let {
                                     Text(
-                                        "%.5f, %.5f".format(it.latitude, it.longitude),
+                                        "%.6f, %.6f".format(it.latitude, it.longitude),
                                         style = MaterialTheme.typography.bodySmall,
                                         color = MaterialTheme.colorScheme.onSurfaceVariant
                                     )
@@ -713,12 +764,14 @@ fun MapLibreMapScreen(
                                 Icon(Icons.Default.Image, "Фото", Modifier.size(20.dp))
                             }
                         }
+                        // Кнопка регенерации маршрута
                         IconButton(onClick = {
                             FileLogger.i("Route", "🔄 Regenerate requested by user")
                             routeRegenCounter++
                         }) {
                             Icon(Icons.Default.Refresh, "Перегенерировать маршрут", Modifier.size(20.dp))
                         }
+                        // Свернуть / развернуть
                         IconButton(onClick = { isPanelExpanded = !isPanelExpanded }) {
                             Icon(
                                 if (isPanelExpanded) Icons.Default.KeyboardArrowDown else Icons.Default.KeyboardArrowUp,
@@ -728,6 +781,7 @@ fun MapLibreMapScreen(
                         }
                     }
 
+                    // Раскрывающаяся часть
                     if (isPanelExpanded) {
                         HorizontalDivider(Modifier.padding(vertical = 6.dp))
 
@@ -809,11 +863,15 @@ private fun pointsToLineString(points: List<Pair<Double, Double>>): String {
     return """{"type":"Feature","geometry":{"type":"LineString","coordinates":[$coords]}}"""
 }
 
-private fun formatDistance(m: Float): String = if (m < 1000) "${m.toInt()} м" else String.format("%.2f км", m / 1000)
+private fun formatDistance(m: Float): String {
+    val total = Math.round(m).toLong()
+    return if (total < 1000) "$total м" else formatKmMeters(total)
+}
 
 private fun formatRouteInfo(distance: Double?, duration: Double?, mode: String): String {
     val dist = distance ?: return "Маршрут построен"
-    val distStr = if (dist < 1000) "${dist.toInt()} м" else String.format("%.2f км", dist / 1000)
+    val total = Math.round(dist).toLong()
+    val distStr = if (total < 1000) "$total м" else formatKmMeters(total)
     val durStr = duration?.let { " • ${it.toInt() / 60} мин" } ?: ""
     val modeStr = when (mode) {
         "offline" -> " (оффлайн)"
@@ -822,6 +880,12 @@ private fun formatRouteInfo(distance: Double?, duration: Double?, mode: String):
         else -> ""
     }
     return "$distStr$durStr$modeStr"
+}
+
+private fun formatKmMeters(totalM: Long): String {
+    val km = totalM / 1000
+    val m = totalM % 1000
+    return if (m == 0L) "$km км" else "$km км $m м"
 }
 
 private fun createUserArrowBitmap(color: Int): Bitmap {
