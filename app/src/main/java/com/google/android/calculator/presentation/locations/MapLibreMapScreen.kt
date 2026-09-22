@@ -232,7 +232,22 @@ fun MapLibreMapScreen(
         if (!hasLocationPermission)
             permissionLauncher.launch(arrayOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION))
     }
-
+    
+    // Обновление пина цели при загрузке target
+    LaunchedEffect(target, mapRef) {
+        val t = target ?: return@LaunchedEffect
+        val map = mapRef ?: return@LaunchedEffect
+        val style = map.style ?: return@LaunchedEffect
+        
+        val source = style.getSourceAs<GeoJsonSource>("target_source")
+        if (source != null) {
+            source.setGeoJson(
+                """{"type":"Feature","geometry":{"type":"Point","coordinates":[${t.longitude},${t.latitude}]}}"""
+            )
+            FileLogger.d("Map", "🎯 Target pin updated: ${t.name}")
+        }
+    }
+    
     DisposableEffect(Unit) {
         onDispose {
             currentRegionId?.let { regionId ->
