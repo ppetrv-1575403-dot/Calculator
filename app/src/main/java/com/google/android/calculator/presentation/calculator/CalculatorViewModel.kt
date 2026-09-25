@@ -5,6 +5,9 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.lifecycle.ViewModel
 import com.google.android.calculator.domain.usecase.CheckPinUseCase
+import com.google.android.calculator.utils.FileLogger
+import com.google.android.calculator.utils.VaultManager
+import com.google.android.calculator.utils.VaultMode
 
 class CalculatorViewModel(
     private val checkPinUseCase: CheckPinUseCase,
@@ -65,9 +68,32 @@ class CalculatorViewModel(
         }
     }
 
+    /**
+     * Долгое нажатие "=" — ввод PIN.
+     * Проверяем через VaultManager (знает оба PIN: основной и фейковый).
+     */
     fun onEqualsLongPressed() {
         if (display.isEmpty()) { pinHintVisible = true; return }
-        if (checkPinUseCase(display)) {
+        val entered = display.trim()
+
+        // 1) Основная проверка: VaultManager знает оба PIN
+        val mode = VaultManager.authenticate(entered)
+        if (mode != null) {
+            FileLogger.i("Vault", "Unlock via VaultManager: mode=$mode")
+            VaultManager.enterMode(mode)
+            onVaultOpened()
+            onClear()
+            return
+        }
+
+        // 2) Fallback для старых установок: PIN есть только в PinRepository.
+        //    При успешном входе мигрируем PIN в VaultManager.
+        if (checkPinUseCase(entered)) {
+            if (!VaultManager.hasMainPin()) {
+                VaultManager.setMainPin(entered)
+                FileLogger.i("Vault", "Main PIN migrated from PinRepository")
+            }
+            VaultManager.enterMode(VaultMode.REAL)
             onVaultOpened()
             onClear()
         } else {

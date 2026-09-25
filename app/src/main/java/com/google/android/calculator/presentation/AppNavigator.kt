@@ -17,9 +17,16 @@ import com.google.android.calculator.presentation.locations.MapScreen
 import com.google.android.calculator.presentation.locations.MapLibreMapScreen
 import com.google.android.calculator.presentation.locations.OfflineMapsScreen
 import com.google.android.calculator.presentation.preview.PreviewScreen
+import com.google.android.calculator.presentation.settings.SettingsScreen
 import com.google.android.calculator.presentation.setup.SetupPinScreen
 import com.google.android.calculator.presentation.vault.VaultScreen
+import com.google.android.calculator.utils.DecoySeeder
 import com.google.android.calculator.utils.PermissionUtils
+import com.google.android.calculator.utils.VaultManager
+import com.google.android.calculator.utils.VaultMode
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 
 @Composable
 fun AppNavigator(appContainer: AppContainer, mainActivity: MainActivity) {
@@ -45,7 +52,16 @@ fun AppNavigator(appContainer: AppContainer, mainActivity: MainActivity) {
         }
 
         composable("calculator") {
-            LaunchedEffect(Unit) { mainActivity.markVaultAsClosed() }
+            LaunchedEffect(Unit) {
+                appContainer.navigateToCalculator.collect { should ->
+                if (should) {
+                        navController.navigate("calculator") { popUpTo(0) { inclusive = true } }
+                        appContainer.resetNavigateSignal()
+                        mainActivity.markVaultAsClosed()
+                        VaultManager.enterMode(VaultMode.REAL)   // ← добавить
+                    }
+                }
+            }     
             CalculatorScreen(appContainer) { navController.navigate("vault") }
         }
 
@@ -57,7 +73,9 @@ fun AppNavigator(appContainer: AppContainer, mainActivity: MainActivity) {
                 onNavigateToPicker = { fid -> navController.navigate("file_picker/${fid.ifEmpty { "root" }}") },
                 onAddLocation = { fid -> navController.navigate("add_location/${fid.ifEmpty { "root" }}") },
                 onOpenMap = { id -> navController.navigate("map/$id") },
-                onPreviewFile = { id -> navController.navigate("preview/$id") }
+                onPreviewFile = { id -> navController.navigate("preview/$id") },
+                onOpenSettings = { navController.navigate("settings") },
+                onEditLocation = { id -> navController.navigate("edit_location/$id") }
             )
         }
 
@@ -99,20 +117,6 @@ fun AppNavigator(appContainer: AppContainer, mainActivity: MainActivity) {
             )
         }
 
-        /*composable(
-            route = "map/{locationId}",
-            arguments = listOf(navArgument("locationId") { type = NavType.StringType })
-        ) { entry ->
-            MapScreen(
-                appContainer = appContainer,
-                locationId = entry.arguments?.getString("locationId") ?: "",
-                onBack = { navController.popBackStack() },
-                onOpenPhoto = { id -> navController.navigate("preview/$id") },
-                onEditLocation = { id -> navController.navigate("add_location/root?editId=$id") },
-                onOpenOfflineMaps = { navController.navigate("offline_maps") }
-            )
-        }*/
-
         composable(
             route = "map/{locationId}",
             arguments = listOf(navArgument("locationId") { type = NavType.StringType })
@@ -139,6 +143,24 @@ fun AppNavigator(appContainer: AppContainer, mainActivity: MainActivity) {
                 fileId = entry.arguments?.getString("fileId") ?: "",
                 appContainer = appContainer,
                 onBack = { navController.popBackStack() }
+            )
+        }
+
+        composable("settings") {
+            SettingsScreen(
+                onBack = { navController.popBackStack() },
+                onOpenOfflineMaps = { navController.navigate("offline_maps") },
+                onOpenAbout = { /* TODO */ },
+                onSyncMainPin = { newPin ->
+                    appContainer.savePinUseCase(newPin)
+                },
+                onSeedDecoyData = {
+                    CoroutineScope(Dispatchers.IO).launch {
+                        VaultManager.enterMode(VaultMode.DECOY)
+                        DecoySeeder.seedLocationRepository(appContainer.locationRepository)
+                        VaultManager.enterMode(VaultMode.REAL)
+                    }
+                }
             )
         }
     }

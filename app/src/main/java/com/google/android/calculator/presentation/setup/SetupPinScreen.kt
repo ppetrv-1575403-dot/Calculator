@@ -13,6 +13,8 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import com.google.android.calculator.R
 import com.google.android.calculator.di.AppContainer
+import com.google.android.calculator.utils.VaultManager
+import com.google.android.calculator.utils.VaultMode
 
 @Composable
 fun SetupPinScreen(appContainer: AppContainer, onSuccess: () -> Unit) {
@@ -48,7 +50,16 @@ fun SetupPinScreen(appContainer: AppContainer, onSuccess: () -> Unit) {
                 Text(it, color = MaterialTheme.colorScheme.error)
             }
             Spacer(Modifier.height(32.dp))
-            Button(onClick = { viewModel.save(onSuccess) }, Modifier.fillMaxWidth()) {
+            Button(
+                onClick = {
+                    viewModel.save {
+                        VaultManager.setMainPin(viewModel.pin)
+                        VaultManager.enterMode(VaultMode.REAL)
+                        onSuccess()
+                    }
+                },
+                Modifier.fillMaxWidth()
+            ) {
                 Text(stringResource(R.string.setup_save))
             }
         }

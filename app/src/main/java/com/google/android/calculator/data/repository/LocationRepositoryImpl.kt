@@ -9,12 +9,16 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 
-class LocationRepositoryImpl(context: Context) : LocationRepository {
+class LocationRepositoryImpl(
+    context: Context,
+    private val fileName: String = "locations_meta.enc",
+    private val legacyFileName: String = "locations_meta.txt"
+) : LocationRepository {
 
     private val metaStore = EncryptedMetaStore(
         context,
-        fileName = "locations_meta.enc",
-        legacyPlaintextFileName = "locations_meta.txt"
+        fileName = fileName,
+        legacyPlaintextFileName = legacyFileName
     )
     private val mutex = Mutex()
 

@@ -57,6 +57,10 @@ import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.TimeoutException
 import java.util.concurrent.atomic.AtomicReference
+import kotlin.math.PI
+import kotlin.math.cos
+import kotlin.math.pow
+import kotlin.math.roundToInt
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -88,12 +92,16 @@ fun MapLibreMapScreen(
     var isOfflineMode by remember { mutableStateOf(false) }
     var currentRegionId by remember { mutableStateOf<String?>(null) }
     
-    // === UI: сворачиваемая панель, регенерация, компас ===
+    // === UI: сворачиваемая панель, регенерация, компас, масштаб ===
     var isPanelExpanded by remember { mutableStateOf(false) }
     var panelHeight by remember { mutableStateOf(0.dp) }
     var routeRegenCounter by remember { mutableStateOf(0) }
     var routeVersion by remember { mutableStateOf(0) }
     var deviceAzimuth by remember { mutableStateOf(0f) }
+    
+    // === Масштабная линейка ===
+    var scaleLabel by remember { mutableStateOf("100 м") }
+    var scaleBarWidth by remember { mutableStateOf(100.dp) }
     
     // === Свежие значения вне Compose-snapshot (для длинной корутины роутинга) ===
     val currentLocationRef = remember { AtomicReference<Location?>(null) }
@@ -107,6 +115,31 @@ fun MapLibreMapScreen(
     var mapRef by remember { mutableStateOf<MapLibreMap?>(null) }
     var userSourceRef by remember { mutableStateOf<GeoJsonSource?>(null) }
     var userLayerRef by remember { mutableStateOf<SymbolLayer?>(null) }
+
+    // === Расчёт масштабной линейки: номинал подбирается под ширину ≤ 120 px ===
+    fun updateScaleBar(zoom: Double, latitude: Double) {
+        val metersPerPixel = 156543.03 * cos(latitude * PI / 180) / 2.0.pow(zoom)
+        val maxWidthPx = 120.0
+        
+        // Номиналы от 1 м до 5000 км
+        val candidates = listOf(
+            1.0, 2.0, 5.0, 10.0, 20.0, 25.0, 50.0, 100.0, 200.0, 500.0,
+            1000.0, 2000.0, 5000.0, 10000.0, 20000.0, 50000.0, 100000.0,
+            200000.0, 500000.0, 1000000.0, 2000000.0, 5000000.0
+        )
+        
+        // Наибольший номинал, который помещается в maxWidthPx
+        val chosen = candidates.lastOrNull { it / metersPerPixel <= maxWidthPx }
+            ?: candidates.first()
+        
+        val widthPx = (chosen / metersPerPixel).roundToInt().coerceIn(24, 120)
+        scaleBarWidth = with(density) { widthPx.toDp() }
+        scaleLabel = if (chosen >= 1000.0) {
+            "${(chosen / 1000).toInt()} км"
+        } else {
+            "${chosen.toInt()} м"
+        }
+    }
     
     var hasLocationPermission by remember {
         mutableStateOf(
@@ -139,7 +172,6 @@ fun MapLibreMapScreen(
 
             val topLayerId = style.layers.lastOrNull()?.id
 
-            // Серая линия от конца маршрута до цели
             val connectionEndSource = GeoJsonSource("connection_end_source")
             style.addSource(connectionEndSource)
             
@@ -151,19 +183,17 @@ fun MapLibreMapScreen(
                 PropertyFactory.lineOpacity(0.9f)
             )
 
-            // Синяя линия от пользователя до начала маршрута
             val connectionStartSource = GeoJsonSource("connection_start_source")
             style.addSource(connectionStartSource)
             
             val connectionStartLayer = LineLayer("connection_start_layer", "connection_start_source").withProperties(
-                PropertyFactory.lineColor("#1565C0"),
+                PropertyFactory.lineColor("#9E9E9E"),
                 PropertyFactory.lineWidth(8f),
                 PropertyFactory.lineCap("round"),
                 PropertyFactory.lineJoin("round"),
                 PropertyFactory.lineOpacity(0.9f)
             )
 
-            // Основной маршрут
             val routeSource = GeoJsonSource("route_source")
             style.addSource(routeSource)
             
@@ -229,10 +259,8 @@ fun MapLibreMapScreen(
                 )
             }
             
-            // === ДИАГНОСТИКА КАРТЫ: список слоёв и источников стиля ===
             FileLogger.i("MapDiag", "[$logPrefix] Style layers (${style.layers.size}): ${style.layers.joinToString(", ") { it.id }}")
             FileLogger.i("MapDiag", "[$logPrefix] Style sources: ${style.sources.joinToString(", ") { it.id }}")
-            
             FileLogger.i("Map", "[$logPrefix] ✅ Style setup complete. Layers: ${style.layers.size}")
         } catch (e: Exception) {
             FileLogger.e("Map", "[$logPrefix] Failed to setup style", e)
@@ -245,7 +273,6 @@ fun MapLibreMapScreen(
             permissionLauncher.launch(arrayOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION))
     }
     
-    // Обновление пина цели при загрузке target
     LaunchedEffect(target, mapRef) {
         val t = target ?: return@LaunchedEffect
         val map = mapRef ?: return@LaunchedEffect
@@ -270,7 +297,6 @@ fun MapLibreMapScreen(
         }
     }
 
-    // Роутинг — обновляется каждые 5 секунд, при смене транспорта и при регенерации
     LaunchedEffect(target, transportMode, routeRegenCounter) {
         val t = target ?: return@LaunchedEffect
         FileLogger.i("Route", "Routing loop started for target: ${t.name}, transport=$transportMode")
@@ -278,7 +304,6 @@ fun MapLibreMapScreen(
         val region = OfflineRegions.findRegionForPoint(t.latitude, t.longitude)
             ?: currentLocationRef.get()?.let { OfflineRegions.findRegionForPoint(it.latitude, it.longitude) }
         
-        // Определяем оффлайн-режим ОДИН раз до цикла (локальная переменная вместо чтения state в цикле)
         val offlineActive = if (region != null && OfflineRouter.isGraphDownloaded(context, region.id)) {
             val loadError = withContext(Dispatchers.IO) {
                 OfflineRouter.loadGraph(context, region.id)
@@ -301,7 +326,6 @@ fun MapLibreMapScreen(
         
         while (true) {
             try {
-                // === Свежая позиция через AtomicReference (не через Compose-snapshot) ===
                 val cur = currentLocationRef.get()
                 val currentTransport = transportMode
                 val useOffline = offlineActive
@@ -351,7 +375,6 @@ fun MapLibreMapScreen(
                             }
                         } catch (e: TimeoutException) {
                             future.cancel(true)
-                            // Поток мог зависнуть навсегда — пересоздаём executor
                             FileLogger.e("Route", "⏰ Route timeout (10s)! Recreating executor...")
                             val old = executorRef.getAndSet(Executors.newSingleThreadExecutor())
                             old.shutdownNow()
@@ -390,7 +413,6 @@ fun MapLibreMapScreen(
                         val firstPoint = points.first()
                         val lastPoint = points.last()
                         
-                        // Синяя линия от пользователя до начала маршрута
                         val distFromUser = distanceBetween(cur.latitude, cur.longitude, firstPoint.first, firstPoint.second)
                         if (distFromUser > 0) {
                             connectionStartPoints = listOf(
@@ -401,7 +423,6 @@ fun MapLibreMapScreen(
                             connectionStartPoints = emptyList()
                         }
                         
-                        // Серая линия от конца маршрута до цели
                         val distToTarget = distanceBetween(lastPoint.first, lastPoint.second, t.latitude, t.longitude)
                         if (distToTarget > 0) {
                             connectionEndPoints = listOf(lastPoint, Pair(t.latitude, t.longitude))
@@ -413,7 +434,6 @@ fun MapLibreMapScreen(
                         routeDistance = distance
                         routeDuration = duration
                     } else {
-                        // Маршрут не построен — серая прямая от пользователя до цели
                         connectionStartPoints = emptyList()
                         connectionEndPoints = listOf(
                             Pair(cur.latitude, cur.longitude),
@@ -429,21 +449,18 @@ fun MapLibreMapScreen(
                     }
                     
                     isLoadingRoute = false
-                    routeVersion++   // форсирует перерисовку даже если точки совпадают
-                    // === ПУЛЬС: видно, жив ли цикл и от какой точки строит ===
+                    routeVersion++
                     FileLogger.d("Route", "♥ loop alive: cur=${"%.5f".format(cur.latitude)}, ${"%.5f".format(cur.longitude)}, mode=$routeMode, pts=${routePoints.size}")
                 }
             } catch (e: kotlinx.coroutines.CancellationException) {
-                throw e   // штатная отмена эффекта — пробрасываем
+                throw e
             } catch (e: Exception) {
-                // Любая неожиданная ошибка НЕ убивает цикл
                 FileLogger.e("Route", "❌ Loop iteration crashed, continuing", e)
             }
             delay(5000)
         }
     }
 
-    // Обновление маршрутов на карте (с routeRegenCounter для гарантированной перерисовки)
     LaunchedEffect(routePoints, connectionStartPoints, connectionEndPoints, routeMode, transportMode, routeVersion, routeRegenCounter) {
       try {
         val map = mapRef
@@ -458,7 +475,6 @@ fun MapLibreMapScreen(
             return@LaunchedEffect
         }
 
-        // Цвет по режиму: пешком = синий, машина = оранжевый, прямая = серый
         val routeColor = when {
             routeMode == "direct" -> "#9E9E9E"
             transportMode == "car" -> "#E65100"
@@ -472,7 +488,6 @@ fun MapLibreMapScreen(
         } else {
             routeSource?.setGeoJson("""{"type":"Feature","geometry":{"type":"LineString","coordinates":[]}}""")
         }
-        // Запоминаем начало маршрута для живой линии (вне snapshot)
         routeStartRef.set(routePoints.firstOrNull())
         
         (style.getLayer("route_layer") as? LineLayer)?.setProperties(PropertyFactory.lineColor(routeColor))
@@ -499,10 +514,8 @@ fun MapLibreMapScreen(
       }
     }
     
-    // Обновление позиции пользователя, центрирование и живая линия до маршрута
     LaunchedEffect(currentLocation, routeRegenCounter) {
         currentLocation?.let { loc ->
-            // === Сохраняем свежую позицию вне snapshot ===
             currentLocationRef.set(loc)
             
             val style = mapRef?.style
@@ -513,7 +526,7 @@ fun MapLibreMapScreen(
             mapRef?.let { map ->
                 val targetLatLng = LatLng(loc.latitude, loc.longitude)
                 if (!hasCenteredOnUser) {
-                    map.animateCamera(CameraUpdateFactory.newLatLng(targetLatLng), 1000)
+                    map.animateCamera(CameraUpdateFactory.newLatLngZoom(targetLatLng, 15.0), 1000)
                     hasCenteredOnUser = true
                 } else if (autoCenterEnabled) {
                     val currentTarget = map.cameraPosition.target
@@ -523,7 +536,6 @@ fun MapLibreMapScreen(
                 }
             }
             
-            // === Живая прямая линия: пользователь -> начало маршрута ===
             val routeStart = routeStartRef.get()
             if (routeStart != null) {
                 val distToRouteStart = distanceBetween(
@@ -554,7 +566,6 @@ fun MapLibreMapScreen(
                     lastAzimuth = newAzimuth
                     userLayerRef?.setProperties(PropertyFactory.iconRotate(newAzimuth))
                 }
-                // Плавное вращение стрелки-компаса в панели (порог 3°, чтобы не дёргать UI)
                 if (Math.abs(newAzimuth - deviceAzimuth) > 3f) {
                     deviceAzimuth = newAzimuth
                 }
@@ -606,6 +617,11 @@ fun MapLibreMapScreen(
                     mapView.getMapAsync { map ->
                         mapRef = map
                         
+                        // === Отключаем нестабильный компас и логотип MapLibre ===
+                        map.uiSettings.isCompassEnabled = false
+                        map.uiSettings.isLogoEnabled = false
+                        map.uiSettings.isAttributionEnabled = false
+                        
                         val region = target?.let { OfflineRegions.findRegionForPoint(it.latitude, it.longitude) }
                             ?: currentLocationRef.get()?.let { OfflineRegions.findRegionForPoint(it.latitude, it.longitude) }
 
@@ -625,13 +641,16 @@ fun MapLibreMapScreen(
                             setupMapStyle(style, "initial")
                         }
 
-                        // === ДИАГНОСТИКА КАРТЫ ===
+                        // === Диагностический listener + обновление масштабной линейки ===
                         map.addOnCameraIdleListener {
                             val pos = map.cameraPosition
                             FileLogger.d("MapDiag", "📍 Camera: zoom=${"%.2f".format(pos.zoom)}, target=${pos.target}")
+                            updateScaleBar(pos.zoom, pos.target?.latitude ?: 0.0)
                         }
 
-                        // Если этот блок даст ошибку сборки — просто удали его (3 строки)
+                        // Инициализация масштабной линейки
+                        updateScaleBar(map.cameraPosition.zoom, map.cameraPosition.target?.latitude ?: 0.0)
+
                         mapView.addOnDidFinishLoadingStyleListener {
                             FileLogger.i("MapDiag", "🎨 Style finished loading")
                         }
@@ -650,6 +669,33 @@ fun MapLibreMapScreen(
                 modifier = Modifier.fillMaxSize()
             )
 
+            // === Масштабная линейка (слева внизу, над панелью) ===
+            Row(
+                modifier = Modifier
+                    .align(Alignment.BottomStart)
+                    .navigationBarsPadding()
+                    .padding(start = 16.dp, bottom = panelHeight + 16.dp)
+                    .background(
+                        MaterialTheme.colorScheme.surface.copy(alpha = 0.85f),
+                        MaterialTheme.shapes.small
+                    )
+                    .padding(horizontal = 8.dp, vertical = 4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Box(
+                    modifier = Modifier
+                        .width(scaleBarWidth)
+                        .height(2.dp)
+                        .background(MaterialTheme.colorScheme.onSurface)
+                )
+                Text(
+                    scaleLabel,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurface
+                )
+            }
+
             // === FAB-кнопки: всегда над панелью ===
             Column(
                 modifier = Modifier
@@ -663,10 +709,9 @@ fun MapLibreMapScreen(
                     onClick = {
                         autoCenterEnabled = !autoCenterEnabled
                         if (autoCenterEnabled) {
-                            // Сразу центрируемся при включении
                             currentLocationRef.get()?.let { loc ->
                                 mapRef?.animateCamera(
-                                    CameraUpdateFactory.newLatLngZoom(LatLng(loc.latitude, loc.longitude), 16.5),
+                                    CameraUpdateFactory.newLatLngZoom(LatLng(loc.latitude, loc.longitude), 15.0),
                                     600
                                 )
                             }
@@ -685,10 +730,9 @@ fun MapLibreMapScreen(
 
                 FloatingActionButton(
                     onClick = {
-                        // Мгновенное центрирование на текущей позиции
                         currentLocationRef.get()?.let { loc ->
                             mapRef?.animateCamera(
-                                CameraUpdateFactory.newLatLngZoom(LatLng(loc.latitude, loc.longitude), 16.5),
+                                CameraUpdateFactory.newLatLngZoom(LatLng(loc.latitude, loc.longitude), 15.0),
                                 600
                             )
                             hasCenteredOnUser = true
@@ -718,23 +762,46 @@ fun MapLibreMapScreen(
                 color = MaterialTheme.colorScheme.surface.copy(alpha = 0.95f)
             ) {
                 Column(Modifier.padding(horizontal = 12.dp, vertical = 6.dp)) {
-                    // Верхняя строка — видна всегда
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        // Компас-бейдж: стрелка крутится по азимуту устройства
+                        // === Компас со сторонами света ===
                         Box(
                             Modifier
-                                .size(34.dp)
+                                .size(46.dp)
                                 .background(
                                     MaterialTheme.colorScheme.primaryContainer,
                                     CircleShape
                                 ),
                             contentAlignment = Alignment.Center
                         ) {
+                            // Фиксированные метки сторон света (не вращаются)
+                            Text(
+                                "N",
+                                Modifier.align(Alignment.TopCenter).padding(top = 2.dp),
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.error
+                            )
+                            Text(
+                                "S",
+                                Modifier.align(Alignment.BottomCenter).padding(bottom = 2.dp),
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onPrimaryContainer
+                            )
+                            Text(
+                                "E",
+                                Modifier.align(Alignment.CenterEnd).padding(end = 3.dp),
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onPrimaryContainer
+                            )
+                            Text(
+                                "W",
+                                Modifier.align(Alignment.CenterStart).padding(start = 3.dp),
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onPrimaryContainer
+                            )
+                            // Вращающаяся стрелка
                             Icon(
                                 Icons.Default.Navigation, null,
-                                Modifier
-                                    .size(20.dp)
-                                    .rotate(deviceAzimuth),
+                                Modifier.size(16.dp).rotate(deviceAzimuth),
                                 tint = MaterialTheme.colorScheme.onPrimaryContainer
                             )
                         }
@@ -764,14 +831,12 @@ fun MapLibreMapScreen(
                                 Icon(Icons.Default.Image, "Фото", Modifier.size(20.dp))
                             }
                         }
-                        // Кнопка регенерации маршрута
                         IconButton(onClick = {
                             FileLogger.i("Route", "🔄 Regenerate requested by user")
                             routeRegenCounter++
                         }) {
                             Icon(Icons.Default.Refresh, "Перегенерировать маршрут", Modifier.size(20.dp))
                         }
-                        // Свернуть / развернуть
                         IconButton(onClick = { isPanelExpanded = !isPanelExpanded }) {
                             Icon(
                                 if (isPanelExpanded) Icons.Default.KeyboardArrowDown else Icons.Default.KeyboardArrowUp,
@@ -781,7 +846,6 @@ fun MapLibreMapScreen(
                         }
                     }
 
-                    // Раскрывающаяся часть
                     if (isPanelExpanded) {
                         HorizontalDivider(Modifier.padding(vertical = 6.dp))
 

@@ -12,13 +12,19 @@ import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import java.io.File
 
-class VaultRepositoryImpl(private val context: Context, private val crypto: CryptoManager) : VaultRepository {
+class VaultRepositoryImpl(
+    private val context: Context,
+    private val crypto: CryptoManager,
+    vaultDirName: String = "vault",
+    metaFileName: String = "vault_meta.enc",
+    metaLegacyFileName: String = "vault_meta.txt"
+) : VaultRepository {
 
-    private val vaultDir = File(context.filesDir, "vault").apply { mkdirs() }
+    private val vaultDir = File(context.filesDir, vaultDirName).apply { mkdirs() }
     private val metaStore = EncryptedMetaStore(
         context,
-        fileName = "vault_meta.enc",
-        legacyPlaintextFileName = "vault_meta.txt"
+        fileName = metaFileName,
+        legacyPlaintextFileName = metaLegacyFileName
     )
     private val mutex = Mutex()
 
