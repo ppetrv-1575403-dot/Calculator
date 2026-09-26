@@ -103,4 +103,8 @@ dependencies {
     
     // Локальный сервер
     implementation("org.nanohttpd:nanohttpd:2.3.1")
+
+    // OCR
+    implementation("androidx.exifinterface:exifinterface:1.3.7")
+    implementation("com.google.mlkit:text-recognition:16.0.1")
 }
