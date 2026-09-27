@@ -13,9 +13,7 @@ import com.google.android.calculator.di.AppContainer
 import com.google.android.calculator.presentation.calculator.CalculatorScreen
 import com.google.android.calculator.presentation.filepicker.FilePickerScreen
 import com.google.android.calculator.presentation.locations.AddLocationScreen
-import com.google.android.calculator.presentation.locations.AddLocationFromPhotoScreen
 import com.google.android.calculator.presentation.locations.MapLibreMapScreen
-import com.google.android.calculator.presentation.locations.OfflineMapsScreen
 import com.google.android.calculator.presentation.preview.PreviewScreen
 import com.google.android.calculator.presentation.settings.SettingsScreen
 import com.google.android.calculator.presentation.setup.SetupPinScreen
@@ -72,10 +70,11 @@ fun AppNavigator(appContainer: AppContainer, mainActivity: MainActivity) {
                 onPreviewFile = { id -> navController.navigate("preview/$id") },
                 onOpenSettings = { navController.navigate("settings") },
                 onEditLocation = { id -> navController.navigate("add_location/root?editId=$id") },
-                onAddPhotoLocation = { fid -> navController.navigate("add_location_photo/${fid.ifEmpty { "root" }}") }
+                onAddPhotoLocation = { fid -> navController.navigate("file_picker_photo/${fid.ifEmpty { "root" }}") }
             )
         }
 
+        // Обычный импорт файлов
         composable(
             route = "file_picker/{folderId}",
             arguments = listOf(navArgument("folderId") { type = NavType.StringType })
@@ -87,6 +86,25 @@ fun AppNavigator(appContainer: AppContainer, mainActivity: MainActivity) {
                     initialPath = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS).absolutePath,
                     folderId = fid.takeIf { it != "root" },
                     onBack = { navController.popBackStack() }
+                )
+            } else {
+                LaunchedEffect(Unit) { navController.popBackStack() }
+            }
+        }
+
+        // Режим фото-точки: только изображения + распознавание координат
+        composable(
+            route = "file_picker_photo/{folderId}",
+            arguments = listOf(navArgument("folderId") { type = NavType.StringType })
+        ) { entry ->
+            val fid = entry.arguments?.getString("folderId") ?: "root"
+            if (PermissionUtils.hasManageExternalStorage()) {
+                FilePickerScreen(
+                    appContainer = appContainer,
+                    initialPath = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS).absolutePath,
+                    folderId = fid.takeIf { it != "root" },
+                    onBack = { navController.popBackStack() },
+                    photoLocationMode = true
                 )
             } else {
                 LaunchedEffect(Unit) { navController.popBackStack() }
@@ -115,18 +133,6 @@ fun AppNavigator(appContainer: AppContainer, mainActivity: MainActivity) {
         }
 
         composable(
-            route = "add_location_photo/{folderId}",
-            arguments = listOf(navArgument("folderId") { type = NavType.StringType })
-        ) { entry ->
-            val fid = entry.arguments?.getString("folderId") ?: "root"
-            AddLocationFromPhotoScreen(
-                appContainer = appContainer,
-                folderId = fid.takeIf { it != "root" },
-                onBack = { navController.popBackStack() }
-            )
-        }
-
-        composable(
             route = "map/{locationId}",
             arguments = listOf(navArgument("locationId") { type = NavType.StringType })
         ) { entry ->
@@ -138,10 +144,6 @@ fun AppNavigator(appContainer: AppContainer, mainActivity: MainActivity) {
                 onEditLocation = { id -> navController.navigate("add_location/root?editId=$id") },
                 onOpenOfflineMaps = { navController.navigate("offline_maps") }
             )
-        }
-
-        composable("offline_maps") {
-            OfflineMapsScreen(onBack = { navController.popBackStack() })
         }
 
         composable(

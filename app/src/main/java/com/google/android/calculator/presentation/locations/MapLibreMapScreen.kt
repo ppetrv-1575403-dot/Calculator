@@ -603,8 +603,13 @@ fun MapLibreMapScreen(
                 title = { Text(target?.name ?: "Карта", maxLines = 1) },
                 navigationIcon = { IconButton(onClick = onBack) { @Suppress("DEPRECATION") Icon(Icons.Default.ArrowBack, "Назад") } },
                 actions = {
-                    IconButton(onClick = onOpenOfflineMaps) { Icon(Icons.Default.Map, "Оффлайн-карты") }
-                    IconButton(onClick = { target?.let { onEditLocation(it.id) } }) { Icon(Icons.Default.Edit, "Редактировать") }
+                    IconButton(onClick = onOpenOfflineMaps) { 
+                        Icon(Icons.Default.Map, "Оффлайн-карты") 
+                    }
+                    IconButton(onClick = {
+                        target?.let { onEditLocation(it.id) } }) { 
+                            Icon(Icons.Default.Edit, "Редактировать") 
+                    }
                 }
             )
         }

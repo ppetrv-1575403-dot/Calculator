@@ -176,7 +176,7 @@ fun VaultScreen(
                     }
                 }) {
                     @Suppress("DEPRECATION")
-                    Icon(Icons.Default.ArrowBack, "Назад",tint = MaterialTheme.colorScheme.primary)
+                    Icon(Icons.Default.ArrowBack, "Назад")
                 }
                 Text(
                     viewModel.itemToMove?.let { "Выберите папку для перемещения" }
@@ -190,11 +190,11 @@ fun VaultScreen(
                 } else {
                     if (BuildConfig.DEBUG) {
                         IconButton(onClick = { showLogsDialog = true }) {
-                            Icon(Icons.Default.Description, "Логи", tint = MaterialTheme.colorScheme.primary)
+                            Icon(Icons.Default.Description, "Логи")
                         }
                     }
                     IconButton(onClick = onOpenSettings) {
-                        Icon(Icons.Default.Settings, "Настройки", tint = MaterialTheme.colorScheme.primary)
+                        Icon(Icons.Default.Settings, "Настройки")
                     }
                 }
             }
