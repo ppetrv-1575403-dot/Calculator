@@ -1,5 +1,6 @@
 package com.google.android.calculator.presentation.filepicker
 
+import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.net.Uri
@@ -41,7 +42,6 @@ data class PickerFileItem(
     val isDirectory: Boolean, val size: Long
 )
 
-/** Черновик фото-точки для диалога подтверждения */
 private data class PhotoDraft(
     val uri: Uri,
     val fileName: String,
@@ -65,8 +65,12 @@ fun FilePickerScreen(
     var files by remember { mutableStateOf<List<PickerFileItem>>(emptyList()) }
     var isLoading by remember { mutableStateOf(true) }
     var isProcessing by remember { mutableStateOf(false) }
-    var progressText by remember { mutableStateOf("Шифрование и сохранение...") }
+    var progressText by remember { mutableStateOf("") }
     var pendingPhoto by remember { mutableStateOf<PhotoDraft?>(null) }
+    var photoQueue by remember { mutableStateOf<List<PickerFileItem>>(emptyList()) }
+
+    var selectionMode by remember { mutableStateOf(false) }
+    var selectedPaths by remember { mutableStateOf<Set<String>>(emptySet()) }
     val scope = rememberCoroutineScope()
 
     LaunchedEffect(currentPath) {
@@ -75,7 +79,7 @@ fun FilePickerScreen(
         isLoading = false
     }
 
-    // === Диалог подтверждения фото-точки ===
+    // === Диалог фото-точки (обрабатывает очередь) ===
     val draft = pendingPhoto
     if (draft != null && !isProcessing) {
         PhotoLocationDialog(
@@ -107,23 +111,43 @@ fun FilePickerScreen(
                             handleOriginalFile(context, draft.uri, appContainer)
                             appContainer.requestVaultRefresh()
                             pendingPhoto = null
-                            withContext(Dispatchers.Main) {
-                                Toast.makeText(context, "📍 Точка «$name» создана", Toast.LENGTH_LONG).show()
+
+                            val remaining = photoQueue
+                            if (remaining.isNotEmpty()) {
+                                // Следующее фото в очереди
+                                val next = remaining.first()
+                                photoQueue = remaining.drop(1)
+                                progressText = "Распознавание координат..."
+                                pendingPhoto = withContext(Dispatchers.IO) {
+                                    buildPhotoDraft(context, next)
+                                }
+                            } else {
+                                // Последнее фото обработано — закрываем пикер и возвращаемся в хранилище
+                                withContext(Dispatchers.Main) {
+                                    Toast.makeText(
+                                        context,
+                                        "📍 Точка «$name» создана",
+                                        Toast.LENGTH_SHORT
+                                    ).show()
+                                }
+                                onBack()
                             }
-                            onBack()
                         }.onFailure { e ->
                             pendingPhoto = null
+                            photoQueue = emptyList()
                             withContext(Dispatchers.Main) {
                                 Toast.makeText(context, "❌ ${e.message}", Toast.LENGTH_LONG).show()
                             }
                         }
                     } finally {
                         isProcessing = false
+                        progressText = ""
                     }
                 }
             },
-            onDismiss = { 
+            onDismiss = {
                 pendingPhoto = null
+                photoQueue = emptyList()
             }
         )
     }
@@ -134,69 +158,159 @@ fun FilePickerScreen(
             TopAppBar(
                 title = {
                     Text(
-                        if (photoLocationMode)
-                            "Фото с координатами: ${currentPath.substringAfterLast("/", "Файлы")}"
-                        else
-                            currentPath.substringAfterLast("/", "Файлы"),
+                        when {
+                            selectionMode -> "Выбрано: ${selectedPaths.size}"
+                            photoLocationMode -> "Фото: ${currentPath.substringAfterLast("/", "Файлы")}"
+                            else -> currentPath.substringAfterLast("/", "Файлы")
+                        },
                         style = MaterialTheme.typography.titleMedium
                     )
                 },
                 navigationIcon = {
-                    IconButton(onClick = {
-                        val parent = File(currentPath).parent
-                        if (parent != null) currentPath = parent else onBack()
-                    }, enabled = !isProcessing) {
-                        @Suppress("DEPRECATION")
-                        Icon(Icons.Default.ArrowBack, "Назад")
+                    // === Левая кнопка ===
+                    if (selectionMode) {
+                        // В режиме мультивыбора — явно «Отменить выбор»
+                        IconButton(
+                            onClick = {
+                                selectionMode = false
+                                selectedPaths = emptySet()
+                            }
+                        ) {
+                            Icon(Icons.Default.Close, "Отменить выбор")
+                        }
+                    } else {
+                        // В обычном режиме — навигация вверх по папкам / выход
+                        IconButton(
+                            onClick = {
+                                val parent = File(currentPath).parent
+                                if (parent != null) currentPath = parent else onBack()
+                            },
+                            enabled = !isProcessing
+                        ) {
+                            @Suppress("DEPRECATION")
+                            Icon(Icons.Default.ArrowBack, "Назад")
+                        }
                     }
                 },
                 actions = {
-                    // === Кнопка закрытия: всегда возвращает на экран хранилища ===
-                    IconButton(onClick = onBack, enabled = !isProcessing) {
-                        Icon(Icons.Default.Close, "Закрыть")
+                    // Toggle режима мультивыбора
+                    IconButton(
+                        onClick = {
+                            selectionMode = !selectionMode
+                            if (!selectionMode) selectedPaths = emptySet()
+                        },
+                        enabled = !isProcessing
+                    ) {
+                        Icon(
+                            if (selectionMode) Icons.Default.Checklist else Icons.Default.Checklist,
+                            if (selectionMode) "Выйти из выбора" else "Выбрать несколько",
+                            tint = if (selectionMode)
+                                MaterialTheme.colorScheme.primary
+                            else
+                                MaterialTheme.colorScheme.onSurface
+                        )
+                    }
+
+                    // ⭐ Кнопка закрытия пикера — только ВНЕ режима выбора
+                    // (чтобы не путать с Close слева в режиме выбора)
+                    if (!selectionMode) {
+                        IconButton(onClick = onBack, enabled = !isProcessing) {
+                            Icon(Icons.Default.Close, "Закрыть")
+                        }
                     }
                 }
             )
+        },
+        floatingActionButton = {
+            if (selectionMode && selectedPaths.isNotEmpty()) {
+                ExtendedFloatingActionButton(
+                    onClick = {
+                        val items = selectedPaths.toList()
+                        scope.launch {
+                            processBulkSelection(
+                                context = context,
+                                paths = items,
+                                appContainer = appContainer,
+                                folderId = folderId,
+                                photoLocationMode = photoLocationMode,
+                                onSetProgress = { t ->
+                                    progressText = t
+                                    isProcessing = t.isNotEmpty()
+                                },
+                                onPhotoDraft = { d, queue ->
+                                    pendingPhoto = d
+                                    photoQueue = queue
+                                },
+                                onDone = {
+                                    // Массовый импорт обычных файлов завершён — закрываем пикер
+                                    selectedPaths = emptySet()
+                                    selectionMode = false
+                                    onBack()
+                                }
+                            )
+                        }
+                    },
+                    modifier = Modifier.navigationBarsPadding().padding(16.dp),
+                    containerColor = MaterialTheme.colorScheme.primary,
+                    contentColor = MaterialTheme.colorScheme.onPrimary,
+                    icon = {
+                        Icon(
+                            if (photoLocationMode) Icons.Default.AddLocation else Icons.Default.Add,
+                            null
+                        )
+                    },
+                    text = {
+                        Text(
+                            if (photoLocationMode) "Фото-точки: ${selectedPaths.size}"
+                            else "Добавить: ${selectedPaths.size}"
+                        )
+                    }
+                )
+            }
         }
     ) { padding ->
-        Box(Modifier.fillMaxSize().padding(padding)) {
+        Box(
+            Modifier
+                .fillMaxSize()
+                .padding(padding)
+                .navigationBarsPadding()
+        ) {
             when {
                 isLoading -> CircularProgressIndicator(Modifier.align(Alignment.Center))
                 files.isEmpty() -> Text(
                     if (photoLocationMode) "В папке нет изображений" else "Папка пуста",
                     Modifier.align(Alignment.Center).padding(16.dp)
                 )
-                else -> LazyColumn(contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    items(files) { file ->
+                else -> LazyColumn(
+                    contentPadding = PaddingValues(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    items(files, key = { it.path }) { file ->
+                        val isSelected = selectedPaths.contains(file.path)
+
                         Card(
                             onClick = {
-                                if (file.isDirectory) {
+                                if (selectionMode) {
+                                    selectedPaths = if (isSelected)
+                                        selectedPaths - file.path
+                                    else
+                                        selectedPaths + file.path
+                                } else if (file.isDirectory) {
                                     currentPath = file.path
                                 } else if (photoLocationMode) {
-                                    // === Режим фото-точки: распознаём координаты и показываем диалог ===
                                     isProcessing = true
                                     progressText = "Распознавание координат..."
                                     scope.launch {
                                         try {
-                                            val uri = Uri.fromFile(File(file.path))
-                                            val preview = withContext(Dispatchers.IO) { loadThumbnail(file.path, 800) }
-                                            val coords = withContext(Dispatchers.IO) {
-                                                CoordinateRecognizer.recognize(context, uri)
+                                            pendingPhoto = withContext(Dispatchers.IO) {
+                                                buildPhotoDraft(context, file)
                                             }
-                                            pendingPhoto = PhotoDraft(
-                                                uri = uri,
-                                                fileName = file.name,
-                                                preview = preview,
-                                                latText = coords?.let { String.format(Locale.US, "%.6f", it.latitude) } ?: "",
-                                                lonText = coords?.let { String.format(Locale.US, "%.6f", it.longitude) } ?: "",
-                                                source = coords?.source
-                                            )
                                         } finally {
                                             isProcessing = false
+                                            progressText = ""
                                         }
                                     }
                                 } else {
-                                    // === Обычный режим: импорт файла в хранилище ===
                                     isProcessing = true
                                     progressText = "Шифрование и сохранение..."
                                     scope.launch {
@@ -224,23 +338,46 @@ fun FilePickerScreen(
                                             }
                                         } finally {
                                             isProcessing = false
+                                            progressText = ""
                                         }
                                     }
                                 }
                             },
                             enabled = !isProcessing,
-                            modifier = Modifier.fillMaxWidth()
+                            modifier = Modifier.fillMaxWidth(),
+                            colors = CardDefaults.cardColors(
+                                containerColor = if (isSelected)
+                                    MaterialTheme.colorScheme.primaryContainer
+                                else
+                                    MaterialTheme.colorScheme.surface
+                            )
                         ) {
                             Row(Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
+                                if (selectionMode) {
+                                    Checkbox(
+                                        checked = isSelected,
+                                        onCheckedChange = {
+                                            selectedPaths = if (it)
+                                                selectedPaths + file.path
+                                            else
+                                                selectedPaths - file.path
+                                        }
+                                    )
+                                    Spacer(Modifier.width(4.dp))
+                                }
+
                                 when {
                                     file.isDirectory -> Icon(
                                         Icons.Default.Folder, null,
-                                        tint = MaterialTheme.colorScheme.primary,
-                                        modifier = Modifier.size(48.dp).padding(end = 12.dp)
+                                        tint = if (isSelected)
+                                            MaterialTheme.colorScheme.onPrimaryContainer
+                                        else
+                                            MaterialTheme.colorScheme.primary,
+                                        modifier = Modifier.size(40.dp).padding(end = 12.dp)
                                     )
                                     file.mimeType.startsWith("image/") -> ThumbImage(
                                         file.path,
-                                        Modifier.size(48.dp).padding(end = 12.dp)
+                                        Modifier.size(40.dp).padding(end = 12.dp)
                                     )
                                     else -> {
                                         val icon = when {
@@ -248,19 +385,34 @@ fun FilePickerScreen(
                                             FileTypeUtils.isTextFile(file.name, file.mimeType) -> Icons.Default.Description
                                             else -> Icons.Default.InsertDriveFile
                                         }
-                                        Icon(icon, null, tint = MaterialTheme.colorScheme.primary,
-                                            modifier = Modifier.size(48.dp).padding(end = 12.dp))
+                                        Icon(icon, null,
+                                            tint = if (isSelected)
+                                                MaterialTheme.colorScheme.onPrimaryContainer
+                                            else
+                                                MaterialTheme.colorScheme.primary,
+                                            modifier = Modifier.size(40.dp).padding(end = 12.dp))
                                     }
                                 }
                                 Column(Modifier.weight(1f)) {
-                                    Text(file.name, style = MaterialTheme.typography.bodyLarge, maxLines = 1)
+                                    Text(
+                                        file.name,
+                                        style = MaterialTheme.typography.bodyLarge,
+                                        maxLines = 1
+                                    )
                                     if (!file.isDirectory) Text(
                                         formatSize(file.size),
                                         style = MaterialTheme.typography.bodySmall,
                                         color = MaterialTheme.colorScheme.onSurfaceVariant
                                     )
+                                    if (file.isDirectory && selectionMode) {
+                                        Text(
+                                            "Выбор папки = все файлы рекурсивно",
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                    }
                                 }
-                                if (photoLocationMode && !file.isDirectory) {
+                                if (photoLocationMode && !file.isDirectory && !selectionMode) {
                                     Icon(
                                         Icons.Default.AddLocation, null,
                                         tint = MaterialTheme.colorScheme.primary,
@@ -273,7 +425,7 @@ fun FilePickerScreen(
                 }
             }
             if (isProcessing) {
-                Box(Modifier.fillMaxSize().padding(padding), contentAlignment = Alignment.Center) {
+                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                     Card(Modifier.padding(32.dp)) {
                         Column(Modifier.padding(24.dp), horizontalAlignment = Alignment.CenterHorizontally) {
                             CircularProgressIndicator()
@@ -287,6 +439,131 @@ fun FilePickerScreen(
     }
 }
 
+// ==================== Создание черновика фото-точки ====================
+
+private suspend fun buildPhotoDraft(context: Context, file: PickerFileItem): PhotoDraft =
+    withContext(Dispatchers.IO) {
+        val uri = Uri.fromFile(File(file.path))
+        val preview = loadThumbnail(file.path, 800)
+        val coords = CoordinateRecognizer.recognize(context, uri)
+        PhotoDraft(
+            uri = uri,
+            fileName = file.name,
+            preview = preview,
+            latText = coords?.let { String.format(Locale.US, "%.6f", it.latitude) } ?: "",
+            lonText = coords?.let { String.format(Locale.US, "%.6f", it.longitude) } ?: "",
+            source = coords?.source
+        )
+    }
+
+// ==================== Массовая обработка выбора ====================
+
+private suspend fun processBulkSelection(
+    context: Context,
+    paths: List<String>,
+    appContainer: AppContainer,
+    folderId: String?,
+    photoLocationMode: Boolean,
+    onSetProgress: (String) -> Unit,
+    onPhotoDraft: (PhotoDraft, List<PickerFileItem>) -> Unit,
+    onDone: () -> Unit
+) = withContext(Dispatchers.IO) {
+    // 1) Разворачиваем пути: папки — рекурсивно
+    val allFiles = mutableListOf<PickerFileItem>()
+    paths.forEach { path ->
+        val f = File(path)
+        if (f.isDirectory) {
+            collectFiles(f, photoLocationMode, allFiles)
+        } else if (f.exists()) {
+            allFiles.add(
+                PickerFileItem(
+                    name = f.name,
+                    path = f.absolutePath,
+                    mimeType = guessMime(f.name),
+                    isDirectory = false,
+                    size = f.length()
+                )
+            )
+        }
+    }
+
+    if (allFiles.isEmpty()) {
+        withContext(Dispatchers.Main) {
+            Toast.makeText(context, "Нет файлов для добавления", Toast.LENGTH_SHORT).show()
+        }
+        onDone()
+        return@withContext
+    }
+
+    // 2) Фото-режим: первое фото — в диалог, остальные — в очередь
+    if (photoLocationMode) {
+        val first = allFiles.first()
+        val rest = allFiles.drop(1)
+        withContext(Dispatchers.Main) { onSetProgress("Распознавание координат...") }
+        val draft = buildPhotoDraft(context, first)
+        withContext(Dispatchers.Main) {
+            onSetProgress("")
+            onPhotoDraft(draft, rest)
+            // onDone здесь НЕ вызываем: пикер закроется после обработки
+            // последнего фото в очереди (в onSave диалога)
+        }
+        return@withContext
+    }
+
+    // 3) Обычный режим: импортируем последовательно
+    var ok = 0
+    var errors = 0
+    allFiles.forEachIndexed { index, file ->
+        withContext(Dispatchers.Main) {
+            onSetProgress("Шифрование... ${index + 1}/${allFiles.size}")
+        }
+        val uri = Uri.fromFile(File(file.path))
+        val result = appContainer.addFileUseCase(uri, file.name, file.mimeType, folderId)
+        if (result.isSuccess) {
+            handleOriginalFile(context, uri, appContainer)
+            ok++
+        } else {
+            errors++
+        }
+    }
+
+    appContainer.requestVaultRefresh()
+    withContext(Dispatchers.Main) {
+        onSetProgress("")
+        Toast.makeText(
+            context,
+            if (errors == 0) "✅ Добавлено файлов: $ok"
+            else "Добавлено: $ok, ошибок: $errors",
+            Toast.LENGTH_LONG
+        ).show()
+        // Закрываем пикер и возвращаемся в хранилище
+        onDone()
+    }
+}
+
+private fun collectFiles(
+    dir: File,
+    imagesOnly: Boolean,
+    out: MutableList<PickerFileItem>
+) {
+    dir.listFiles()?.forEach { f ->
+        if (f.name.startsWith(".")) return@forEach
+        if (f.isDirectory) {
+            collectFiles(f, imagesOnly, out)
+        } else if (!imagesOnly || isImageName(f.name)) {
+            out.add(
+                PickerFileItem(
+                    name = f.name,
+                    path = f.absolutePath,
+                    mimeType = guessMime(f.name),
+                    isDirectory = false,
+                    size = f.length()
+                )
+            )
+        }
+    }
+}
+
 // ==================== Диалог фото-точки ====================
 
 @Composable
@@ -295,9 +572,9 @@ private fun PhotoLocationDialog(
     onSave: (name: String, lat: Double, lon: Double) -> Unit,
     onDismiss: () -> Unit
 ) {
-    var name by remember { mutableStateOf(draft.fileName.substringBeforeLast(".")) }
-    var latText by remember { mutableStateOf(draft.latText) }
-    var lonText by remember { mutableStateOf(draft.lonText) }
+    var name by remember(draft.fileName) { mutableStateOf(draft.fileName.substringBeforeLast(".")) }
+    var latText by remember(draft.fileName) { mutableStateOf(draft.latText) }
+    var lonText by remember(draft.fileName) { mutableStateOf(draft.lonText) }
     var error by remember { mutableStateOf<String?>(null) }
 
     AlertDialog(
@@ -305,7 +582,6 @@ private fun PhotoLocationDialog(
         title = { Text("Новая фото-точка") },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                // Превью фото
                 Box(
                     Modifier
                         .fillMaxWidth()
@@ -443,7 +719,7 @@ private fun loadThumbnail(path: String, target: Int): Bitmap? = try {
 // ==================== Служебное ====================
 
 private suspend fun handleOriginalFile(
-    context: android.content.Context,
+    context: Context,
     originalUri: Uri,
     appContainer: AppContainer
 ) {

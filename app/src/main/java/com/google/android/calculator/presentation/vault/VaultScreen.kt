@@ -222,7 +222,7 @@ fun VaultScreen(
                     }
                 }
                 else -> {
-                    LazyColumn(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    LazyColumn(modifier = Modifier.navigationBarsPadding().weight(1f), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                         items(viewModel.items) { item ->
                             when (item) {
                                 is VaultItem.FolderItem -> FolderListItem(

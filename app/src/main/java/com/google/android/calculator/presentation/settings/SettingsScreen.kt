@@ -66,7 +66,6 @@ fun SettingsScreen(
     }
 
     Scaffold(
-        contentWindowInsets = WindowInsets(0, 0, 0, 0),
         topBar = {
             TopAppBar(
                 title = { Text("Настройки") },
@@ -80,7 +79,10 @@ fun SettingsScreen(
         }
     ) { padding ->
         LazyColumn(
-            Modifier.fillMaxSize().padding(padding),
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(padding)
+                .navigationBarsPadding(),   // ⭐ отступ от нижней панели навигации
             verticalArrangement = Arrangement.spacedBy(4.dp)
         ) {
             // === БЕЗОПАСНОСТЬ ===
@@ -212,6 +214,11 @@ fun SettingsScreen(
                     },
                     modifier = Modifier.clickable { onOpenAbout() }
                 )
+            }
+
+            // === Нижний отступ, чтобы последний элемент не прилипал к навигации ===
+            item {
+                Spacer(Modifier.height(24.dp))
             }
         }
     }

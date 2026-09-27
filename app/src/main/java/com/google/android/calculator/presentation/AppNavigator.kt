@@ -14,6 +14,7 @@ import com.google.android.calculator.presentation.calculator.CalculatorScreen
 import com.google.android.calculator.presentation.filepicker.FilePickerScreen
 import com.google.android.calculator.presentation.locations.AddLocationScreen
 import com.google.android.calculator.presentation.locations.MapLibreMapScreen
+import com.google.android.calculator.presentation.locations.OfflineMapsScreen
 import com.google.android.calculator.presentation.preview.PreviewScreen
 import com.google.android.calculator.presentation.settings.SettingsScreen
 import com.google.android.calculator.presentation.setup.SetupPinScreen
@@ -144,6 +145,10 @@ fun AppNavigator(appContainer: AppContainer, mainActivity: MainActivity) {
                 onEditLocation = { id -> navController.navigate("add_location/root?editId=$id") },
                 onOpenOfflineMaps = { navController.navigate("offline_maps") }
             )
+        }
+
+        composable("offline_maps") {
+            OfflineMapsScreen(onBack = { navController.popBackStack() })
         }
 
         composable(
