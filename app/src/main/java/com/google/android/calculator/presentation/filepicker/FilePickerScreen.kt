@@ -1,6 +1,7 @@
 package com.google.android.calculator.presentation.filepicker
 
 import android.net.Uri
+import android.widget.Toast
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -10,13 +11,19 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import com.google.android.calculator.di.AppContainer
+import com.google.android.calculator.domain.model.SavedLocation
+import com.google.android.calculator.utils.CoordinateRecognizer
 import com.google.android.calculator.utils.FileTypeUtils
+import com.google.android.calculator.utils.OriginalFileAction
+import com.google.android.calculator.utils.SecureDelete
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
+import java.util.UUID
 
 data class PickerFileItem(
     val name: String, val path: String, val mimeType: String,
@@ -31,10 +38,12 @@ fun FilePickerScreen(
     folderId: String?,
     onBack: () -> Unit
 ) {
+    val context = LocalContext.current
     var currentPath by remember { mutableStateOf(initialPath) }
     var files by remember { mutableStateOf<List<PickerFileItem>>(emptyList()) }
     var isLoading by remember { mutableStateOf(true) }
     var isProcessing by remember { mutableStateOf(false) }
+    var progressText by remember { mutableStateOf("Шифрование и сохранение...") }
     val scope = rememberCoroutineScope()
 
     LaunchedEffect(currentPath) {
@@ -68,20 +77,107 @@ fun FilePickerScreen(
                     items(files) { file ->
                         Card(
                             onClick = {
-                                if (file.isDirectory) currentPath = file.path
-                                else {
+                                if (file.isDirectory) {
+                                    currentPath = file.path
+                                } else {
                                     isProcessing = true
                                     scope.launch {
                                         try {
-                                            val uri = Uri.fromFile(File(file.path))
-                                            val result = withContext(Dispatchers.IO) {
-                                                appContainer.addFileUseCase(uri, file.name, file.mimeType, folderId)
+                                            val fileUri = Uri.fromFile(File(file.path))
+                                            val isImage = file.mimeType.startsWith("image/")
+
+                                            // Шаг 1: добавляем файл в хранилище
+                                            progressText = "Шифрование и сохранение..."
+                                            val addResult = withContext(Dispatchers.IO) {
+                                                if (isImage) {
+                                                    // Для фото — с возвратом id (нужен для привязки точки)
+                                                    appContainer.vaultRepository.addFileWithId(
+                                                        fileUri, file.name, file.mimeType, folderId
+                                                    )
+                                                } else {
+                                                    // Для обычных файлов — без id
+                                                    appContainer.addFileUseCase(
+                                                        fileUri, file.name, file.mimeType, folderId
+                                                    )
+                                                }
                                             }
-                                            if (result.isSuccess) {
+
+                                            if (addResult.isSuccess) {
+                                                // Шаг 2: для изображений — пытаемся распознать координаты
+                                                if (isImage) {
+                                                    progressText = "Распознавание координат..."
+                                                    val photoId = addResult.getOrNull() as? String
+                                                    val coords = withContext(Dispatchers.IO) {
+                                                        CoordinateRecognizer.recognize(context, fileUri)
+                                                    }
+
+                                                    if (coords != null && photoId != null) {
+                                                        progressText = "Создание точки..."
+                                                        val locationId = UUID.randomUUID().toString()
+                                                        withContext(Dispatchers.IO) {
+                                                            appContainer.locationRepository.addLocation(
+                                                                SavedLocation(
+                                                                    id = locationId,
+                                                                    name = file.name.substringBeforeLast("."),
+                                                                    description = "Импортировано из ${file.name} (${coords.source})",
+                                                                    latitude = coords.latitude,
+                                                                    longitude = coords.longitude,
+                                                                    photoId = photoId,
+                                                                    folderId = folderId
+                                                                )
+                                                            )
+                                                        }
+                                                        withContext(Dispatchers.Main) {
+                                                            Toast.makeText(
+                                                                context,
+                                                                "📍 Создана точка: %.5f, %.5f".format(coords.latitude, coords.longitude),
+                                                                Toast.LENGTH_LONG
+                                                            ).show()
+                                                        }
+                                                    } else if (isImage) {
+                                                        withContext(Dispatchers.Main) {
+                                                            Toast.makeText(
+                                                                context,
+                                                                "Фото добавлено (координаты не найдены)",
+                                                                Toast.LENGTH_SHORT
+                                                            ).show()
+                                                        }
+                                                    }
+                                                } else {
+                                                    withContext(Dispatchers.Main) {
+                                                        Toast.makeText(
+                                                            context,
+                                                            "Файл добавлен в хранилище",
+                                                            Toast.LENGTH_SHORT
+                                                        ).show()
+                                                    }
+                                                }
+
+                                                // Шаг 3: действие с оригиналом
+                                                handleOriginalFile(context, fileUri, appContainer)
+
                                                 appContainer.requestVaultRefresh()
                                                 onBack()
+                                            } else {
+                                                withContext(Dispatchers.Main) {
+                                                    Toast.makeText(
+                                                        context,
+                                                        "Ошибка: ${addResult.exceptionOrNull()?.message ?: "неизвестно"}",
+                                                        Toast.LENGTH_LONG
+                                                    ).show()
+                                                }
                                             }
-                                        } finally { isProcessing = false }
+                                        } catch (e: Exception) {
+                                            withContext(Dispatchers.Main) {
+                                                Toast.makeText(
+                                                    context,
+                                                    "Ошибка: ${e.message}",
+                                                    Toast.LENGTH_LONG
+                                                ).show()
+                                            }
+                                        } finally {
+                                            isProcessing = false
+                                        }
                                     }
                                 }
                             },
@@ -112,11 +208,34 @@ fun FilePickerScreen(
                         Column(Modifier.padding(24.dp), horizontalAlignment = Alignment.CenterHorizontally) {
                             CircularProgressIndicator()
                             Spacer(Modifier.height(16.dp))
-                            Text("Шифрование и сохранение...")
+                            Text(progressText)
                         }
                     }
                 }
             }
+        }
+    }
+}
+
+private suspend fun handleOriginalFile(
+    context: android.content.Context,
+    originalUri: Uri,
+    appContainer: AppContainer
+) {
+    val action = appContainer.securePreferences.originalFileAction
+    val result = when (action) {
+        OriginalFileAction.KEEP -> return
+        OriginalFileAction.DELETE -> SecureDelete.delete(context, originalUri)
+        OriginalFileAction.SHRED -> SecureDelete.shred(context, originalUri)
+    }
+    if (result) {
+        withContext(Dispatchers.Main) {
+            val msg = when (action) {
+                OriginalFileAction.DELETE -> "🗑 Оригинал удалён"
+                OriginalFileAction.SHRED -> "🔥 Оригинал затёрт и удалён"
+                else -> ""
+            }
+            Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
         }
     }
 }

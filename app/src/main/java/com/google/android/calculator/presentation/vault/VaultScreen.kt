@@ -47,7 +47,8 @@ fun VaultScreen(
     onOpenMap: (String) -> Unit,
     onPreviewFile: (String) -> Unit,
     onOpenSettings: () -> Unit,
-    onEditLocation: (String) -> Unit
+    onEditLocation: (String) -> Unit,
+    onAddPhotoLocation: (String) -> Unit
 ) {
     val context = LocalContext.current
     val viewModel = remember {
@@ -142,12 +143,17 @@ fun VaultScreen(
                             )
                         }
                     }
-                    Spacer(Modifier.height(8.dp))
+                    
                     MiniFab(Icons.Default.AddLocation, "Точка") { fabExpanded = false; onAddLocation(currentFolderId) }
                     Spacer(Modifier.height(8.dp))
+                    
+                    MiniFab(Icons.Default.AddAPhoto, "Фото-точка") { fabExpanded = false; onAddPhotoLocation(currentFolderId) }
+                    Spacer(Modifier.height(8.dp))
+                    
                     MiniFab(Icons.Default.CreateNewFolder, "Папка") { fabExpanded = false; folderName = ""; showCreateFolderDialog = true }
                     Spacer(Modifier.height(8.dp))
                 }
+                
                 FloatingActionButton(
                     onClick = { fabExpanded = !fabExpanded },
                     containerColor = MaterialTheme.colorScheme.primary,

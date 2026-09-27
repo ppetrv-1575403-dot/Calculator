@@ -13,7 +13,7 @@ import com.google.android.calculator.di.AppContainer
 import com.google.android.calculator.presentation.calculator.CalculatorScreen
 import com.google.android.calculator.presentation.filepicker.FilePickerScreen
 import com.google.android.calculator.presentation.locations.AddLocationScreen
-import com.google.android.calculator.presentation.locations.MapScreen
+import com.google.android.calculator.presentation.locations.AddLocationFromPhotoScreen
 import com.google.android.calculator.presentation.locations.MapLibreMapScreen
 import com.google.android.calculator.presentation.locations.OfflineMapsScreen
 import com.google.android.calculator.presentation.preview.PreviewScreen
@@ -39,6 +39,7 @@ fun AppNavigator(appContainer: AppContainer, mainActivity: MainActivity) {
                 navController.navigate("calculator") { popUpTo(0) { inclusive = true } }
                 appContainer.resetNavigateSignal()
                 mainActivity.markVaultAsClosed()
+                VaultManager.enterMode(VaultMode.REAL)
             }
         }
     }
@@ -52,16 +53,7 @@ fun AppNavigator(appContainer: AppContainer, mainActivity: MainActivity) {
         }
 
         composable("calculator") {
-            LaunchedEffect(Unit) {
-                appContainer.navigateToCalculator.collect { should ->
-                if (should) {
-                        navController.navigate("calculator") { popUpTo(0) { inclusive = true } }
-                        appContainer.resetNavigateSignal()
-                        mainActivity.markVaultAsClosed()
-                        VaultManager.enterMode(VaultMode.REAL)   // ← добавить
-                    }
-                }
-            }     
+            LaunchedEffect(Unit) { mainActivity.markVaultAsClosed() }
             CalculatorScreen(appContainer) { navController.navigate("vault") }
         }
 
@@ -69,13 +61,18 @@ fun AppNavigator(appContainer: AppContainer, mainActivity: MainActivity) {
             LaunchedEffect(Unit) { mainActivity.markVaultAsOpen() }
             VaultScreen(
                 appContainer = appContainer,
-                onBack = { navController.popBackStack(); mainActivity.markVaultAsClosed() },
+                onBack = {
+                    navController.popBackStack()
+                    mainActivity.markVaultAsClosed()
+                    VaultManager.enterMode(VaultMode.REAL)
+                },
                 onNavigateToPicker = { fid -> navController.navigate("file_picker/${fid.ifEmpty { "root" }}") },
                 onAddLocation = { fid -> navController.navigate("add_location/${fid.ifEmpty { "root" }}") },
                 onOpenMap = { id -> navController.navigate("map/$id") },
                 onPreviewFile = { id -> navController.navigate("preview/$id") },
                 onOpenSettings = { navController.navigate("settings") },
-                onEditLocation = { id -> navController.navigate("edit_location/$id") }
+                onEditLocation = { id -> navController.navigate("add_location/root?editId=$id") },
+                onAddPhotoLocation = { fid -> navController.navigate("add_location_photo/${fid.ifEmpty { "root" }}") }
             )
         }
 
@@ -118,6 +115,18 @@ fun AppNavigator(appContainer: AppContainer, mainActivity: MainActivity) {
         }
 
         composable(
+            route = "add_location_photo/{folderId}",
+            arguments = listOf(navArgument("folderId") { type = NavType.StringType })
+        ) { entry ->
+            val fid = entry.arguments?.getString("folderId") ?: "root"
+            AddLocationFromPhotoScreen(
+                appContainer = appContainer,
+                folderId = fid.takeIf { it != "root" },
+                onBack = { navController.popBackStack() }
+            )
+        }
+
+        composable(
             route = "map/{locationId}",
             arguments = listOf(navArgument("locationId") { type = NavType.StringType })
         ) { entry ->
@@ -148,6 +157,7 @@ fun AppNavigator(appContainer: AppContainer, mainActivity: MainActivity) {
 
         composable("settings") {
             SettingsScreen(
+                securePreferences = appContainer.securePreferences,
                 onBack = { navController.popBackStack() },
                 onOpenOfflineMaps = { navController.navigate("offline_maps") },
                 onOpenAbout = { /* TODO */ },

@@ -8,16 +8,20 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
+import com.google.android.calculator.data.secure.SecurePreferences
+import com.google.android.calculator.utils.OriginalFileAction
 import com.google.android.calculator.utils.VaultManager
 import com.google.android.calculator.utils.VaultMode
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun SettingsScreen(
+    securePreferences: SecurePreferences,
     onBack: () -> Unit,
     onOpenOfflineMaps: () -> Unit,
     onOpenAbout: () -> Unit,
@@ -26,6 +30,8 @@ fun SettingsScreen(
 ) {
     var showChangePinDialog by remember { mutableStateOf(false) }
     var showDecoyDialog by remember { mutableStateOf(false) }
+    var showOriginalActionDialog by remember { mutableStateOf(false) }
+    var originalAction by remember { mutableStateOf(securePreferences.originalFileAction) }
 
     val isDecoyMode = VaultManager.currentMode == VaultMode.DECOY
 
@@ -47,6 +53,18 @@ fun SettingsScreen(
         )
     }
 
+    if (showOriginalActionDialog) {
+        OriginalActionDialog(
+            current = originalAction,
+            onSave = { action ->
+                securePreferences.originalFileAction = action
+                originalAction = action
+                showOriginalActionDialog = false
+            },
+            onDismiss = { showOriginalActionDialog = false }
+        )
+    }
+
     Scaffold(
         contentWindowInsets = WindowInsets(0, 0, 0, 0),
         topBar = {
@@ -65,6 +83,7 @@ fun SettingsScreen(
             Modifier.fillMaxSize().padding(padding),
             verticalArrangement = Arrangement.spacedBy(4.dp)
         ) {
+            // === БЕЗОПАСНОСТЬ ===
             item {
                 Text(
                     "Безопасность",
@@ -118,10 +137,41 @@ fun SettingsScreen(
                 }
             }
 
+            // === ФАЙЛЫ ===
             item {
                 HorizontalDivider(Modifier.padding(vertical = 8.dp))
             }
+            item {
+                Text(
+                    "Файлы",
+                    style = MaterialTheme.typography.titleSmall,
+                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+                    color = MaterialTheme.colorScheme.primary
+                )
+            }
+            item {
+                ListItem(
+                    headlineContent = { Text("Оригиналы после переноса") },
+                    supportingContent = {
+                        Text(
+                            when (originalAction) {
+                                OriginalFileAction.KEEP -> "Оставлять на устройстве"
+                                OriginalFileAction.DELETE -> "Удалять после переноса"
+                                OriginalFileAction.SHRED -> "Затирать и удалять (безопасно)"
+                            }
+                        )
+                    },
+                    leadingContent = {
+                        Icon(Icons.Default.DeleteSweep, null, tint = MaterialTheme.colorScheme.primary)
+                    },
+                    modifier = Modifier.clickable { showOriginalActionDialog = true }
+                )
+            }
 
+            // === КАРТЫ И НАВИГАЦИЯ ===
+            item {
+                HorizontalDivider(Modifier.padding(vertical = 8.dp))
+            }
             item {
                 Text(
                     "Карты и навигация",
@@ -130,7 +180,6 @@ fun SettingsScreen(
                     color = MaterialTheme.colorScheme.primary
                 )
             }
-
             item {
                 ListItem(
                     headlineContent = { Text("Оффлайн-карты") },
@@ -142,10 +191,10 @@ fun SettingsScreen(
                 )
             }
 
+            // === ПРИЛОЖЕНИЕ ===
             item {
                 HorizontalDivider(Modifier.padding(vertical = 8.dp))
             }
-
             item {
                 Text(
                     "Приложение",
@@ -154,7 +203,6 @@ fun SettingsScreen(
                     color = MaterialTheme.colorScheme.primary
                 )
             }
-
             item {
                 ListItem(
                     headlineContent = { Text("О приложении") },
@@ -168,6 +216,8 @@ fun SettingsScreen(
         }
     }
 }
+
+// ==================== Диалог смены PIN ====================
 
 @Composable
 private fun ChangePinDialog(
@@ -257,6 +307,8 @@ private fun ChangePinDialog(
         }
     )
 }
+
+// ==================== Управление фейковым хранилищем ====================
 
 private enum class DecoyView { MENU, CREATE, CHANGE, DISABLE }
 
@@ -435,6 +487,49 @@ private fun DecoyManageDialog(
         },
         dismissButton = {
             TextButton(onClick = onDismiss) { Text("Закрыть") }
+        }
+    )
+}
+
+// ==================== Диалог выбора действия с оригиналами ====================
+
+@Composable
+private fun OriginalActionDialog(
+    current: OriginalFileAction,
+    onSave: (OriginalFileAction) -> Unit,
+    onDismiss: () -> Unit
+) {
+    var selected by remember { mutableStateOf(current) }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Оригиналы после переноса") },
+        text = {
+            Column {
+                listOf(
+                    OriginalFileAction.KEEP to "Оставлять на устройстве",
+                    OriginalFileAction.DELETE to "Удалять после переноса в хранилище",
+                    OriginalFileAction.SHRED to "Затирать (random + zeros) и удалять — безопасно"
+                ).forEach { (action, label) ->
+                    Row(
+                        Modifier
+                            .fillMaxWidth()
+                            .clickable { selected = action }
+                            .padding(vertical = 4.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        RadioButton(selected = selected == action, onClick = { selected = action })
+                        Spacer(Modifier.width(8.dp))
+                        Text(label, style = MaterialTheme.typography.bodyMedium)
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = { onSave(selected) }) { Text("Сохранить") }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("Отмена") }
         }
     )
 }
