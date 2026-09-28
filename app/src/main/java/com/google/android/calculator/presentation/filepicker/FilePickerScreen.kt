@@ -7,11 +7,18 @@ import android.net.Uri
 import android.widget.Toast
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
@@ -30,6 +37,7 @@ import com.google.android.calculator.utils.CoordinateRecognizer
 import com.google.android.calculator.utils.FileTypeUtils
 import com.google.android.calculator.utils.OriginalFileAction
 import com.google.android.calculator.utils.SecureDelete
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -51,6 +59,9 @@ private data class PhotoDraft(
     val source: String?
 )
 
+private enum class FileFilter { ALL, IMAGES, DOCUMENTS }
+private enum class ViewMode { LIST, GALLERY }
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun FilePickerScreen(
@@ -62,7 +73,8 @@ fun FilePickerScreen(
 ) {
     val context = LocalContext.current
     var currentPath by remember { mutableStateOf(initialPath) }
-    var files by remember { mutableStateOf<List<PickerFileItem>>(emptyList()) }
+    var allFiles by remember { mutableStateOf<List<PickerFileItem>>(emptyList()) }
+    var searchResults by remember { mutableStateOf<List<PickerFileItem>>(emptyList()) }
     var isLoading by remember { mutableStateOf(true) }
     var isProcessing by remember { mutableStateOf(false) }
     var progressText by remember { mutableStateOf("") }
@@ -71,11 +83,33 @@ fun FilePickerScreen(
 
     var selectionMode by remember { mutableStateOf(false) }
     var selectedPaths by remember { mutableStateOf<Set<String>>(emptySet()) }
+
+    // === Фильтр и режим отображения ===
+    var filter by remember { mutableStateOf(if (photoLocationMode) FileFilter.IMAGES else FileFilter.ALL) }
+    var viewMode by remember { mutableStateOf(ViewMode.LIST) }
+
     val scope = rememberCoroutineScope()
 
-    LaunchedEffect(currentPath) {
+    // Режим поиска: фильтры ищут рекурсивно во всех подпапках
+    val isSearchMode = filter != FileFilter.ALL
+
+    // Что показывать: текущая папка (ALL) или результаты рекурсивного поиска
+    val displayFiles = if (isSearchMode) searchResults else allFiles
+
+    // === Загрузка: текущая папка или рекурсивный поиск ===
+    LaunchedEffect(currentPath, filter) {
         isLoading = true
-        files = withContext(Dispatchers.IO) { loadFiles(currentPath, photoLocationMode) }
+        if (filter == FileFilter.ALL) {
+            allFiles = withContext(Dispatchers.IO) { loadFiles(currentPath) }
+            searchResults = emptyList()
+        } else {
+            searchResults = withContext(Dispatchers.IO) {
+                val out = mutableListOf<PickerFileItem>()
+                collectFilesFiltered(File(currentPath), filter, out)
+                out.sortedBy { it.name.lowercase() }
+            }
+            allFiles = emptyList()
+        }
         isLoading = false
     }
 
@@ -114,7 +148,6 @@ fun FilePickerScreen(
 
                             val remaining = photoQueue
                             if (remaining.isNotEmpty()) {
-                                // Следующее фото в очереди
                                 val next = remaining.first()
                                 photoQueue = remaining.drop(1)
                                 progressText = "Распознавание координат..."
@@ -122,7 +155,6 @@ fun FilePickerScreen(
                                     buildPhotoDraft(context, next)
                                 }
                             } else {
-                                // Последнее фото обработано — закрываем пикер и возвращаемся в хранилище
                                 withContext(Dispatchers.Main) {
                                     Toast.makeText(
                                         context,
@@ -160,6 +192,7 @@ fun FilePickerScreen(
                     Text(
                         when {
                             selectionMode -> "Выбрано: ${selectedPaths.size}"
+                            isSearchMode -> "Найдено: ${displayFiles.size}"
                             photoLocationMode -> "Фото: ${currentPath.substringAfterLast("/", "Файлы")}"
                             else -> currentPath.substringAfterLast("/", "Файлы")
                         },
@@ -167,9 +200,7 @@ fun FilePickerScreen(
                     )
                 },
                 navigationIcon = {
-                    // === Левая кнопка ===
                     if (selectionMode) {
-                        // В режиме мультивыбора — явно «Отменить выбор»
                         IconButton(
                             onClick = {
                                 selectionMode = false
@@ -179,7 +210,6 @@ fun FilePickerScreen(
                             Icon(Icons.Default.Close, "Отменить выбор")
                         }
                     } else {
-                        // В обычном режиме — навигация вверх по папкам / выход
                         IconButton(
                             onClick = {
                                 val parent = File(currentPath).parent
@@ -193,7 +223,16 @@ fun FilePickerScreen(
                     }
                 },
                 actions = {
-                    // Toggle режима мультивыбора
+                    IconButton(
+                        onClick = { viewMode = if (viewMode == ViewMode.LIST) ViewMode.GALLERY else ViewMode.LIST },
+                        enabled = !isProcessing
+                    ) {
+                        Icon(
+                            if (viewMode == ViewMode.LIST) Icons.Default.GridView else Icons.Default.ViewList,
+                            if (viewMode == ViewMode.LIST) "Галерея" else "Список"
+                        )
+                    }
+
                     IconButton(
                         onClick = {
                             selectionMode = !selectionMode
@@ -202,7 +241,7 @@ fun FilePickerScreen(
                         enabled = !isProcessing
                     ) {
                         Icon(
-                            if (selectionMode) Icons.Default.Checklist else Icons.Default.Checklist,
+                            Icons.Default.Checklist,
                             if (selectionMode) "Выйти из выбора" else "Выбрать несколько",
                             tint = if (selectionMode)
                                 MaterialTheme.colorScheme.primary
@@ -211,8 +250,6 @@ fun FilePickerScreen(
                         )
                     }
 
-                    // ⭐ Кнопка закрытия пикера — только ВНЕ режима выбора
-                    // (чтобы не путать с Close слева в режиме выбора)
                     if (!selectionMode) {
                         IconButton(onClick = onBack, enabled = !isProcessing) {
                             Icon(Icons.Default.Close, "Закрыть")
@@ -242,7 +279,6 @@ fun FilePickerScreen(
                                     photoQueue = queue
                                 },
                                 onDone = {
-                                    // Массовый импорт обычных файлов завершён — закрываем пикер
                                     selectedPaths = emptySet()
                                     selectionMode = false
                                     onBack()
@@ -269,171 +305,418 @@ fun FilePickerScreen(
             }
         }
     ) { padding ->
-        Box(
+        Column(
             Modifier
                 .fillMaxSize()
                 .padding(padding)
                 .navigationBarsPadding()
         ) {
-            when {
-                isLoading -> CircularProgressIndicator(Modifier.align(Alignment.Center))
-                files.isEmpty() -> Text(
-                    if (photoLocationMode) "В папке нет изображений" else "Папка пуста",
-                    Modifier.align(Alignment.Center).padding(16.dp)
-                )
-                else -> LazyColumn(
-                    contentPadding = PaddingValues(16.dp),
-                    verticalArrangement = Arrangement.spacedBy(8.dp)
+            // === Панель фильтров ===
+            if (!photoLocationMode) {
+                Row(
+                    Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 8.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    items(files, key = { it.path }) { file ->
-                        val isSelected = selectedPaths.contains(file.path)
+                    FilterChip(
+                        selected = filter == FileFilter.ALL,
+                        onClick = { filter = FileFilter.ALL },
+                        label = { Text("Все") },
+                        leadingIcon = { Icon(Icons.Default.Folder, null, Modifier.size(16.dp)) }
+                    )
+                    FilterChip(
+                        selected = filter == FileFilter.IMAGES,
+                        onClick = { filter = FileFilter.IMAGES },
+                        label = { Text("Фото") },
+                        leadingIcon = { Icon(Icons.Default.Image, null, Modifier.size(16.dp)) }
+                    )
+                    FilterChip(
+                        selected = filter == FileFilter.DOCUMENTS,
+                        onClick = { filter = FileFilter.DOCUMENTS },
+                        label = { Text("Документы") },
+                        leadingIcon = { Icon(Icons.Default.Description, null, Modifier.size(16.dp)) }
+                    )
+                }
+            }
 
-                        Card(
-                            onClick = {
-                                if (selectionMode) {
-                                    selectedPaths = if (isSelected)
-                                        selectedPaths - file.path
-                                    else
-                                        selectedPaths + file.path
-                                } else if (file.isDirectory) {
-                                    currentPath = file.path
-                                } else if (photoLocationMode) {
-                                    isProcessing = true
-                                    progressText = "Распознавание координат..."
-                                    scope.launch {
-                                        try {
-                                            pendingPhoto = withContext(Dispatchers.IO) {
-                                                buildPhotoDraft(context, file)
-                                            }
-                                        } finally {
-                                            isProcessing = false
-                                            progressText = ""
-                                        }
-                                    }
-                                } else {
-                                    isProcessing = true
-                                    progressText = "Шифрование и сохранение..."
-                                    scope.launch {
-                                        try {
-                                            val fileUri = Uri.fromFile(File(file.path))
-                                            val result = withContext(Dispatchers.IO) {
-                                                appContainer.addFileUseCase(fileUri, file.name, file.mimeType, folderId)
-                                            }
-                                            if (result.isSuccess) {
-                                                handleOriginalFile(context, fileUri, appContainer)
-                                                appContainer.requestVaultRefresh()
-                                                onBack()
-                                            } else {
-                                                withContext(Dispatchers.Main) {
-                                                    Toast.makeText(
-                                                        context,
-                                                        "Ошибка: ${result.exceptionOrNull()?.message ?: "неизвестно"}",
-                                                        Toast.LENGTH_LONG
-                                                    ).show()
-                                                }
-                                            }
-                                        } catch (e: Exception) {
-                                            withContext(Dispatchers.Main) {
-                                                Toast.makeText(context, "Ошибка: ${e.message}", Toast.LENGTH_LONG).show()
-                                            }
-                                        } finally {
-                                            isProcessing = false
-                                            progressText = ""
-                                        }
-                                    }
-                                }
-                            },
-                            enabled = !isProcessing,
-                            modifier = Modifier.fillMaxWidth(),
-                            colors = CardDefaults.cardColors(
-                                containerColor = if (isSelected)
-                                    MaterialTheme.colorScheme.primaryContainer
-                                else
-                                    MaterialTheme.colorScheme.surface
-                            )
+            Box(Modifier.fillMaxSize()) {
+                when {
+                    isLoading -> CircularProgressIndicator(Modifier.align(Alignment.Center))
+                    displayFiles.isEmpty() -> Text(
+                        when {
+                            isSearchMode -> "Ничего не найдено в этой папке и подпапках"
+                            else -> "Папка пуста"
+                        },
+                        Modifier.align(Alignment.Center).padding(16.dp)
+                    )
+                    viewMode == ViewMode.LIST -> {
+                        LazyColumn(
+                            contentPadding = PaddingValues(16.dp),
+                            verticalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
-                            Row(Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
-                                if (selectionMode) {
-                                    Checkbox(
-                                        checked = isSelected,
-                                        onCheckedChange = {
-                                            selectedPaths = if (it)
-                                                selectedPaths + file.path
-                                            else
-                                                selectedPaths - file.path
-                                        }
-                                    )
-                                    Spacer(Modifier.width(4.dp))
-                                }
-
-                                when {
-                                    file.isDirectory -> Icon(
-                                        Icons.Default.Folder, null,
-                                        tint = if (isSelected)
-                                            MaterialTheme.colorScheme.onPrimaryContainer
-                                        else
-                                            MaterialTheme.colorScheme.primary,
-                                        modifier = Modifier.size(40.dp).padding(end = 12.dp)
-                                    )
-                                    file.mimeType.startsWith("image/") -> ThumbImage(
-                                        file.path,
-                                        Modifier.size(40.dp).padding(end = 12.dp)
-                                    )
-                                    else -> {
-                                        val icon = when {
-                                            file.mimeType.startsWith("video/") -> Icons.Default.Videocam
-                                            FileTypeUtils.isTextFile(file.name, file.mimeType) -> Icons.Default.Description
-                                            else -> Icons.Default.InsertDriveFile
-                                        }
-                                        Icon(icon, null,
-                                            tint = if (isSelected)
-                                                MaterialTheme.colorScheme.onPrimaryContainer
-                                            else
-                                                MaterialTheme.colorScheme.primary,
-                                            modifier = Modifier.size(40.dp).padding(end = 12.dp))
-                                    }
-                                }
-                                Column(Modifier.weight(1f)) {
-                                    Text(
-                                        file.name,
-                                        style = MaterialTheme.typography.bodyLarge,
-                                        maxLines = 1
-                                    )
-                                    if (!file.isDirectory) Text(
-                                        formatSize(file.size),
-                                        style = MaterialTheme.typography.bodySmall,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                                    )
-                                    if (file.isDirectory && selectionMode) {
-                                        Text(
-                                            "Выбор папки = все файлы рекурсивно",
-                                            style = MaterialTheme.typography.bodySmall,
-                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                            items(displayFiles, key = { it.path }) { file ->
+                                ListItemCard(
+                                    file = file,
+                                    subtitle = if (isSearchMode) relativePath(currentPath, file.path) else null,
+                                    isSelected = selectedPaths.contains(file.path),
+                                    selectionMode = selectionMode,
+                                    photoLocationMode = photoLocationMode,
+                                    onClick = {
+                                        handleFileClick(
+                                            file = file,
+                                            selectionMode = selectionMode,
+                                            selectedPaths = selectedPaths,
+                                            onSelectionChange = { selectedPaths = it },
+                                            onNavigate = { currentPath = it; filter = FileFilter.ALL },
+                                            photoLocationMode = photoLocationMode,
+                                            context = context,
+                                            appContainer = appContainer,
+                                            folderId = folderId,
+                                            scope = scope,
+                                            onProcessingChange = { p, t ->
+                                                isProcessing = p
+                                                progressText = t
+                                            },
+                                            onPhotoDraft = { d -> pendingPhoto = d },
+                                            onBack = onBack
                                         )
+                                    },
+                                    onCheckboxChange = { checked ->
+                                        selectedPaths = if (checked)
+                                            selectedPaths + file.path
+                                        else
+                                            selectedPaths - file.path
                                     }
-                                }
-                                if (photoLocationMode && !file.isDirectory && !selectionMode) {
-                                    Icon(
-                                        Icons.Default.AddLocation, null,
-                                        tint = MaterialTheme.colorScheme.primary,
-                                        modifier = Modifier.size(20.dp)
-                                    )
-                                }
+                                )
+                            }
+                        }
+                    }
+                    else -> {
+                        LazyVerticalGrid(
+                            columns = GridCells.Fixed(3),
+                            contentPadding = PaddingValues(8.dp),
+                            verticalArrangement = Arrangement.spacedBy(8.dp),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            items(displayFiles, key = { it.path }) { file ->
+                                GalleryItem(
+                                    file = file,
+                                    isSelected = selectedPaths.contains(file.path),
+                                    selectionMode = selectionMode,
+                                    onClick = {
+                                        handleFileClick(
+                                            file = file,
+                                            selectionMode = selectionMode,
+                                            selectedPaths = selectedPaths,
+                                            onSelectionChange = { selectedPaths = it },
+                                            onNavigate = { currentPath = it; filter = FileFilter.ALL },
+                                            photoLocationMode = photoLocationMode,
+                                            context = context,
+                                            appContainer = appContainer,
+                                            folderId = folderId,
+                                            scope = scope,
+                                            onProcessingChange = { p, t ->
+                                                isProcessing = p
+                                                progressText = t
+                                            },
+                                            onPhotoDraft = { d -> pendingPhoto = d },
+                                            onBack = onBack
+                                        )
+                                    },
+                                    onLongClick = {
+                                        if (!selectionMode) {
+                                            selectionMode = true
+                                            selectedPaths = setOf(file.path)
+                                        }
+                                    }
+                                )
+                            }
+                        }
+                    }
+                }
+                if (isProcessing) {
+                    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                        Card(Modifier.padding(32.dp)) {
+                            Column(Modifier.padding(24.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+                                CircularProgressIndicator()
+                                Spacer(Modifier.height(16.dp))
+                                Text(progressText)
                             }
                         }
                     }
                 }
             }
-            if (isProcessing) {
-                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                    Card(Modifier.padding(32.dp)) {
-                        Column(Modifier.padding(24.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-                            CircularProgressIndicator()
-                            Spacer(Modifier.height(16.dp))
-                            Text(progressText)
-                        }
+        }
+    }
+}
+
+// ==================== Относительный путь для результатов поиска ====================
+
+private fun relativePath(basePath: String, filePath: String): String {
+    val rel = filePath.removePrefix(basePath).trimStart('/')
+    val dir = rel.substringBeforeLast('/', "")
+    return if (dir.isEmpty()) "" else "📁 $dir"
+}
+
+// ==================== Карточка файла в режиме списка ====================
+
+@Composable
+private fun ListItemCard(
+    file: PickerFileItem,
+    subtitle: String?,
+    isSelected: Boolean,
+    selectionMode: Boolean,
+    photoLocationMode: Boolean,
+    onClick: () -> Unit,
+    onCheckboxChange: (Boolean) -> Unit
+) {
+    Card(
+        onClick = onClick,
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(
+            containerColor = if (isSelected)
+                MaterialTheme.colorScheme.primaryContainer
+            else
+                MaterialTheme.colorScheme.surface
+        )
+    ) {
+        Row(Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
+            if (selectionMode) {
+                Checkbox(checked = isSelected, onCheckedChange = onCheckboxChange)
+                Spacer(Modifier.width(4.dp))
+            }
+
+            when {
+                file.isDirectory -> Icon(
+                    Icons.Default.Folder, null,
+                    tint = if (isSelected)
+                        MaterialTheme.colorScheme.onPrimaryContainer
+                    else
+                        MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.size(40.dp).padding(end = 12.dp)
+                )
+                file.mimeType.startsWith("image/") -> ThumbImage(
+                    file.path,
+                    Modifier.size(40.dp).padding(end = 12.dp)
+                )
+                else -> {
+                    val icon = when {
+                        file.mimeType.startsWith("video/") -> Icons.Default.Videocam
+                        FileTypeUtils.isTextFile(file.name, file.mimeType) -> Icons.Default.Description
+                        else -> Icons.Default.InsertDriveFile
+                    }
+                    Icon(icon, null,
+                        tint = if (isSelected)
+                            MaterialTheme.colorScheme.onPrimaryContainer
+                        else
+                            MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.size(40.dp).padding(end = 12.dp))
+                }
+            }
+            Column(Modifier.weight(1f)) {
+                Text(file.name, style = MaterialTheme.typography.bodyLarge, maxLines = 1)
+                if (!file.isDirectory) {
+                    val sizeText = formatSize(file.size)
+                    Text(
+                        if (subtitle.isNullOrEmpty()) sizeText else "$subtitle • $sizeText",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1
+                    )
+                }
+                if (file.isDirectory && selectionMode) {
+                    Text(
+                        "Выбор папки = все файлы рекурсивно",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+            if (photoLocationMode && !file.isDirectory && !selectionMode) {
+                Icon(
+                    Icons.Default.AddLocation, null,
+                    tint = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.size(20.dp)
+                )
+            }
+        }
+    }
+}
+
+// ==================== Элемент галереи ====================
+
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+private fun GalleryItem(
+    file: PickerFileItem,
+    isSelected: Boolean,
+    selectionMode: Boolean,
+    onClick: () -> Unit,
+    onLongClick: () -> Unit
+) {
+    Box(
+        modifier = Modifier
+            .aspectRatio(1f)
+            .clip(RoundedCornerShape(8.dp))
+            .background(
+                if (isSelected) MaterialTheme.colorScheme.primaryContainer
+                else MaterialTheme.colorScheme.surfaceVariant
+            )
+            .then(
+                if (isSelected) Modifier.border(
+                    2.dp,
+                    MaterialTheme.colorScheme.primary,
+                    RoundedCornerShape(8.dp)
+                ) else Modifier
+            )
+            .combinedClickable(
+                onClick = onClick,
+                onLongClick = onLongClick
+            )
+    ) {
+        when {
+            file.isDirectory -> {
+                Column(
+                    Modifier.fillMaxSize().padding(8.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.Center
+                ) {
+                    Icon(
+                        Icons.Default.Folder,
+                        null,
+                        tint = if (isSelected)
+                            MaterialTheme.colorScheme.onPrimaryContainer
+                        else
+                            MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.size(32.dp)
+                    )
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        file.name,
+                        style = MaterialTheme.typography.bodySmall,
+                        maxLines = 2,
+                        color = if (isSelected)
+                            MaterialTheme.colorScheme.onPrimaryContainer
+                        else
+                            MaterialTheme.colorScheme.onSurface
+                    )
+                }
+            }
+            file.mimeType.startsWith("image/") -> {
+                ThumbImage(file.path, Modifier.fillMaxSize())
+            }
+            else -> {
+                val icon = when {
+                    file.mimeType.startsWith("video/") -> Icons.Default.Videocam
+                    FileTypeUtils.isTextFile(file.name, file.mimeType) -> Icons.Default.Description
+                    else -> Icons.Default.InsertDriveFile
+                }
+                Column(
+                    Modifier.fillMaxSize().padding(8.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.Center
+                ) {
+                    Icon(
+                        icon,
+                        null,
+                        tint = if (isSelected)
+                            MaterialTheme.colorScheme.onPrimaryContainer
+                        else
+                            MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.size(32.dp)
+                    )
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        file.name,
+                        style = MaterialTheme.typography.bodySmall,
+                        maxLines = 2,
+                        color = if (isSelected)
+                            MaterialTheme.colorScheme.onPrimaryContainer
+                        else
+                            MaterialTheme.colorScheme.onSurface
+                    )
+                }
+            }
+        }
+
+        if (selectionMode) {
+            Checkbox(
+                checked = isSelected,
+                onCheckedChange = null,
+                modifier = Modifier
+                    .align(Alignment.TopEnd)
+                    .padding(4.dp)
+            )
+        }
+    }
+}
+
+// ==================== Обработка клика по файлу ====================
+
+private fun handleFileClick(
+    file: PickerFileItem,
+    selectionMode: Boolean,
+    selectedPaths: Set<String>,
+    onSelectionChange: (Set<String>) -> Unit,
+    onNavigate: (String) -> Unit,
+    photoLocationMode: Boolean,
+    context: Context,
+    appContainer: AppContainer,
+    folderId: String?,
+    scope: CoroutineScope,
+    onProcessingChange: (Boolean, String) -> Unit,
+    onPhotoDraft: (PhotoDraft) -> Unit,
+    onBack: () -> Unit
+) {
+    val isSelected = selectedPaths.contains(file.path)
+
+    if (selectionMode) {
+        onSelectionChange(
+            if (isSelected) selectedPaths - file.path
+            else selectedPaths + file.path
+        )
+    } else if (file.isDirectory) {
+        onNavigate(file.path)
+    } else if (photoLocationMode) {
+        onProcessingChange(true, "Распознавание координат...")
+        scope.launch {
+            try {
+                val draft = withContext(Dispatchers.IO) {
+                    buildPhotoDraft(context, file)
+                }
+                onPhotoDraft(draft)
+            } finally {
+                onProcessingChange(false, "")
+            }
+        }
+    } else {
+        onProcessingChange(true, "Шифрование и сохранение...")
+        scope.launch {
+            try {
+                val fileUri = Uri.fromFile(File(file.path))
+                val result = withContext(Dispatchers.IO) {
+                    appContainer.addFileUseCase(fileUri, file.name, file.mimeType, folderId)
+                }
+                if (result.isSuccess) {
+                    handleOriginalFile(context, fileUri, appContainer)
+                    appContainer.requestVaultRefresh()
+                    onBack()
+                } else {
+                    withContext(Dispatchers.Main) {
+                        Toast.makeText(
+                            context,
+                            "Ошибка: ${result.exceptionOrNull()?.message ?: "неизвестно"}",
+                            Toast.LENGTH_LONG
+                        ).show()
                     }
                 }
+            } catch (e: Exception) {
+                withContext(Dispatchers.Main) {
+                    Toast.makeText(context, "Ошибка: ${e.message}", Toast.LENGTH_LONG).show()
+                }
+            } finally {
+                onProcessingChange(false, "")
             }
         }
     }
@@ -456,6 +739,31 @@ private suspend fun buildPhotoDraft(context: Context, file: PickerFileItem): Pho
         )
     }
 
+// ==================== Рекурсивный сбор по фильтру ====================
+
+private fun collectFilesFiltered(
+    dir: File,
+    filter: FileFilter,
+    out: MutableList<PickerFileItem>
+) {
+    dir.listFiles()?.forEach { f ->
+        if (f.name.startsWith(".")) return@forEach
+        if (f.isDirectory) {
+            collectFilesFiltered(f, filter, out)
+        } else {
+            val mime = guessMime(f.name)
+            val matches = when (filter) {
+                FileFilter.IMAGES -> mime.startsWith("image/") || isImageName(f.name)
+                FileFilter.DOCUMENTS -> FileTypeUtils.isTextFile(f.name, mime) || mime == "application/pdf"
+                FileFilter.ALL -> true
+            }
+            if (matches) {
+                out.add(PickerFileItem(f.name, f.absolutePath, mime, false, f.length()))
+            }
+        }
+    }
+}
+
 // ==================== Массовая обработка выбора ====================
 
 private suspend fun processBulkSelection(
@@ -468,7 +776,6 @@ private suspend fun processBulkSelection(
     onPhotoDraft: (PhotoDraft, List<PickerFileItem>) -> Unit,
     onDone: () -> Unit
 ) = withContext(Dispatchers.IO) {
-    // 1) Разворачиваем пути: папки — рекурсивно
     val allFiles = mutableListOf<PickerFileItem>()
     paths.forEach { path ->
         val f = File(path)
@@ -495,7 +802,6 @@ private suspend fun processBulkSelection(
         return@withContext
     }
 
-    // 2) Фото-режим: первое фото — в диалог, остальные — в очередь
     if (photoLocationMode) {
         val first = allFiles.first()
         val rest = allFiles.drop(1)
@@ -504,13 +810,10 @@ private suspend fun processBulkSelection(
         withContext(Dispatchers.Main) {
             onSetProgress("")
             onPhotoDraft(draft, rest)
-            // onDone здесь НЕ вызываем: пикер закроется после обработки
-            // последнего фото в очереди (в onSave диалога)
         }
         return@withContext
     }
 
-    // 3) Обычный режим: импортируем последовательно
     var ok = 0
     var errors = 0
     allFiles.forEachIndexed { index, file ->
@@ -536,7 +839,6 @@ private suspend fun processBulkSelection(
             else "Добавлено: $ok, ошибок: $errors",
             Toast.LENGTH_LONG
         ).show()
-        // Закрываем пикер и возвращаемся в хранилище
         onDone()
     }
 }
@@ -745,19 +1047,17 @@ private fun isImageName(name: String): Boolean =
     name.substringAfterLast(".", "").lowercase() in
             listOf("jpg", "jpeg", "png", "gif", "webp", "bmp", "heic", "heif")
 
-private suspend fun loadFiles(path: String, imagesOnly: Boolean): List<PickerFileItem> = withContext(Dispatchers.IO) {
+private suspend fun loadFiles(path: String): List<PickerFileItem> = withContext(Dispatchers.IO) {
     val list = mutableListOf<PickerFileItem>()
     val dir = File(path)
     if (dir.exists() && dir.isDirectory && dir.canRead()) {
         dir.listFiles()?.forEach { f ->
             if (!f.name.startsWith(".")) {
-                if (f.isDirectory || !imagesOnly || isImageName(f.name)) {
-                    list.add(PickerFileItem(
-                        f.name, f.absolutePath,
-                        if (f.isDirectory) "inode/directory" else guessMime(f.name),
-                        f.isDirectory, if (f.isDirectory) 0 else f.length()
-                    ))
-                }
+                list.add(PickerFileItem(
+                    f.name, f.absolutePath,
+                    if (f.isDirectory) "inode/directory" else guessMime(f.name),
+                    f.isDirectory, if (f.isDirectory) 0 else f.length()
+                ))
             }
         }
     }
