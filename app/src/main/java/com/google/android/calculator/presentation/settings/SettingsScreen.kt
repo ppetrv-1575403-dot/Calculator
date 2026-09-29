@@ -171,28 +171,31 @@ fun SettingsScreen(
             }
 
             // === КАРТЫ И НАВИГАЦИЯ ===
-            item {
-                HorizontalDivider(Modifier.padding(vertical = 8.dp))
+            
+            if (!isDecoyMode) {
+                    item {
+                        HorizontalDivider(Modifier.padding(vertical = 8.dp))
+                    }
+                    item {
+                        Text(
+                            "Карты и навигация",
+                            style = MaterialTheme.typography.titleSmall,
+                            modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                    }
+                    item {
+                        ListItem(
+                            headlineContent = { Text("Оффлайн-карты") },
+                            supportingContent = { Text("Загрузка карт и графов дорог") },
+                            leadingContent = {
+                                Icon(Icons.Default.Map, null, tint = MaterialTheme.colorScheme.primary)
+                            },
+                            modifier = Modifier.clickable { onOpenOfflineMaps() }
+                        )
+                    }
             }
-            item {
-                Text(
-                    "Карты и навигация",
-                    style = MaterialTheme.typography.titleSmall,
-                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
-                    color = MaterialTheme.colorScheme.primary
-                )
-            }
-            item {
-                ListItem(
-                    headlineContent = { Text("Оффлайн-карты") },
-                    supportingContent = { Text("Загрузка карт и графов дорог") },
-                    leadingContent = {
-                        Icon(Icons.Default.Map, null, tint = MaterialTheme.colorScheme.primary)
-                    },
-                    modifier = Modifier.clickable { onOpenOfflineMaps() }
-                )
-            }
-
+            
             // === ПРИЛОЖЕНИЕ ===
             item {
                 HorizontalDivider(Modifier.padding(vertical = 8.dp))

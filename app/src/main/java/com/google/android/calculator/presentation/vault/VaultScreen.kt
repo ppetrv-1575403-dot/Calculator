@@ -32,6 +32,8 @@ import com.google.android.calculator.domain.model.VaultFile
 import com.google.android.calculator.domain.model.VaultFolder
 import com.google.android.calculator.utils.FileLogger
 import com.google.android.calculator.utils.PermissionUtils
+import com.google.android.calculator.utils.VaultManager
+import com.google.android.calculator.utils.VaultMode
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -74,6 +76,8 @@ fun VaultScreen(
         appContainer.setFileOperationInProgress(false)
     }
 
+    val isDecoyMode = VaultManager.currentMode == VaultMode.DECOY
+    
     LaunchedEffect(Unit) { appContainer.vaultRefresh.collect { viewModel.refresh() } }
 
     val exportLauncher = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("*/*")) { uri ->
@@ -143,12 +147,14 @@ fun VaultScreen(
                             )
                         }
                     }
+
+                    if (!isDecoyMode)  {
+                        MiniFab(Icons.Default.AddLocation, "Точка") { fabExpanded = false; onAddLocation(currentFolderId) }
+                        Spacer(Modifier.height(8.dp))
                     
-                    MiniFab(Icons.Default.AddLocation, "Точка") { fabExpanded = false; onAddLocation(currentFolderId) }
-                    Spacer(Modifier.height(8.dp))
-                    
-                    MiniFab(Icons.Default.AddAPhoto, "Фото-точка") { fabExpanded = false; onAddPhotoLocation(currentFolderId) }
-                    Spacer(Modifier.height(8.dp))
+                        MiniFab(Icons.Default.AddAPhoto, "Фото-точка") { fabExpanded = false; onAddPhotoLocation(currentFolderId) }
+                        Spacer(Modifier.height(8.dp))
+                    }
                     
                     MiniFab(Icons.Default.CreateNewFolder, "Папка") { fabExpanded = false; folderName = ""; showCreateFolderDialog = true }
                     Spacer(Modifier.height(8.dp))
