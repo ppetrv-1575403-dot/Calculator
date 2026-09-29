@@ -8,17 +8,24 @@ import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
-import com.google.android.calculator.MainActivity
+import com.google.android.calculator.presentation.MainActivity
 import com.google.android.calculator.di.AppContainer
 import com.google.android.calculator.presentation.calculator.CalculatorScreen
 import com.google.android.calculator.presentation.filepicker.FilePickerScreen
 import com.google.android.calculator.presentation.locations.AddLocationScreen
-import com.google.android.calculator.presentation.locations.MapScreen
+import com.google.android.calculator.presentation.locations.MapLibreMapScreen
 import com.google.android.calculator.presentation.locations.OfflineMapsScreen
 import com.google.android.calculator.presentation.preview.PreviewScreen
+import com.google.android.calculator.presentation.settings.SettingsScreen
 import com.google.android.calculator.presentation.setup.SetupPinScreen
 import com.google.android.calculator.presentation.vault.VaultScreen
+import com.google.android.calculator.utils.DecoySeeder
 import com.google.android.calculator.utils.PermissionUtils
+import com.google.android.calculator.utils.VaultManager
+import com.google.android.calculator.utils.VaultMode
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 
 @Composable
 fun AppNavigator(appContainer: AppContainer, mainActivity: MainActivity) {
@@ -31,6 +38,7 @@ fun AppNavigator(appContainer: AppContainer, mainActivity: MainActivity) {
                 navController.navigate("calculator") { popUpTo(0) { inclusive = true } }
                 appContainer.resetNavigateSignal()
                 mainActivity.markVaultAsClosed()
+                VaultManager.enterMode(VaultMode.REAL)
             }
         }
     }
@@ -52,14 +60,22 @@ fun AppNavigator(appContainer: AppContainer, mainActivity: MainActivity) {
             LaunchedEffect(Unit) { mainActivity.markVaultAsOpen() }
             VaultScreen(
                 appContainer = appContainer,
-                onBack = { navController.popBackStack(); mainActivity.markVaultAsClosed() },
+                onBack = {
+                    navController.popBackStack()
+                    mainActivity.markVaultAsClosed()
+                    VaultManager.enterMode(VaultMode.REAL)
+                },
                 onNavigateToPicker = { fid -> navController.navigate("file_picker/${fid.ifEmpty { "root" }}") },
                 onAddLocation = { fid -> navController.navigate("add_location/${fid.ifEmpty { "root" }}") },
                 onOpenMap = { id -> navController.navigate("map/$id") },
-                onPreviewFile = { id -> navController.navigate("preview/$id") }
+                onPreviewFile = { id -> navController.navigate("preview/$id") },
+                onOpenSettings = { navController.navigate("settings") },
+                onEditLocation = { id -> navController.navigate("add_location/root?editId=$id") },
+                onAddPhotoLocation = { fid -> navController.navigate("file_picker_photo/${fid.ifEmpty { "root" }}") }
             )
         }
 
+        // Обычный импорт файлов
         composable(
             route = "file_picker/{folderId}",
             arguments = listOf(navArgument("folderId") { type = NavType.StringType })
@@ -71,6 +87,25 @@ fun AppNavigator(appContainer: AppContainer, mainActivity: MainActivity) {
                     initialPath = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS).absolutePath,
                     folderId = fid.takeIf { it != "root" },
                     onBack = { navController.popBackStack() }
+                )
+            } else {
+                LaunchedEffect(Unit) { navController.popBackStack() }
+            }
+        }
+
+        // Режим фото-точки: только изображения + распознавание координат
+        composable(
+            route = "file_picker_photo/{folderId}",
+            arguments = listOf(navArgument("folderId") { type = NavType.StringType })
+        ) { entry ->
+            val fid = entry.arguments?.getString("folderId") ?: "root"
+            if (PermissionUtils.hasManageExternalStorage()) {
+                FilePickerScreen(
+                    appContainer = appContainer,
+                    initialPath = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS).absolutePath,
+                    folderId = fid.takeIf { it != "root" },
+                    onBack = { navController.popBackStack() },
+                    photoLocationMode = true
                 )
             } else {
                 LaunchedEffect(Unit) { navController.popBackStack() }
@@ -102,7 +137,7 @@ fun AppNavigator(appContainer: AppContainer, mainActivity: MainActivity) {
             route = "map/{locationId}",
             arguments = listOf(navArgument("locationId") { type = NavType.StringType })
         ) { entry ->
-            MapScreen(
+            MapLibreMapScreen(
                 appContainer = appContainer,
                 locationId = entry.arguments?.getString("locationId") ?: "",
                 onBack = { navController.popBackStack() },
@@ -124,6 +159,25 @@ fun AppNavigator(appContainer: AppContainer, mainActivity: MainActivity) {
                 fileId = entry.arguments?.getString("fileId") ?: "",
                 appContainer = appContainer,
                 onBack = { navController.popBackStack() }
+            )
+        }
+
+        composable("settings") {
+            SettingsScreen(
+                securePreferences = appContainer.securePreferences,
+                onBack = { navController.popBackStack() },
+                onOpenOfflineMaps = { navController.navigate("offline_maps") },
+                onOpenAbout = { /* TODO */ },
+                onSyncMainPin = { newPin ->
+                    appContainer.savePinUseCase(newPin)
+                },
+                onSeedDecoyData = {
+                    CoroutineScope(Dispatchers.IO).launch {
+                        VaultManager.enterMode(VaultMode.DECOY)
+                        DecoySeeder.seedLocationRepository(appContainer.locationRepository)
+                        VaultManager.enterMode(VaultMode.REAL)
+                    }
+                }
             )
         }
     }

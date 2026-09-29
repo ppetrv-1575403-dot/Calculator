@@ -17,25 +17,67 @@ import com.google.android.calculator.domain.usecase.ClearCacheUseCase
 import com.google.android.calculator.domain.usecase.GetFilesUseCase
 import com.google.android.calculator.domain.usecase.IsFirstLaunchUseCase
 import com.google.android.calculator.domain.usecase.SavePinUseCase
+import com.google.android.calculator.utils.VaultManager
+import com.google.android.calculator.utils.VaultMode
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 
 class AppContainer(context: Context) {
     private val appContext = context.applicationContext
 
+    init {
+        VaultManager.init(appContext)
+    }
+
     val securePreferences by lazy { SecurePreferences(appContext) }
     private val cryptoManager by lazy { CryptoManager(appContext) }
 
     val pinRepository: PinRepository by lazy { PinRepositoryImpl(securePreferences) }
-    val vaultRepository: VaultRepository by lazy { VaultRepositoryImpl(appContext, cryptoManager) }
-    val locationRepository: LocationRepository by lazy { LocationRepositoryImpl(appContext) }
-    val folderRepository: FolderRepository by lazy { FolderRepositoryImpl(appContext) }
+
+    // === РЕАЛЬНОЕ хранилище ===
+    private val vaultRepositoryReal: VaultRepository by lazy {
+        VaultRepositoryImpl(appContext, cryptoManager, "vault", "vault_meta.enc", "vault_meta.txt")
+    }
+    private val locationRepositoryReal: LocationRepository by lazy {
+        LocationRepositoryImpl(appContext, "locations_meta.enc", "locations_meta.txt")
+    }
+    private val folderRepositoryReal: FolderRepository by lazy {
+        FolderRepositoryImpl(appContext, "folders_meta.enc", "folders_meta.txt")
+    }
+
+    // === ФЕЙКОВОЕ хранилище ===
+    private val vaultRepositoryDecoy: VaultRepository by lazy {
+        VaultRepositoryImpl(appContext, cryptoManager, "vault_decoy", "vault_meta_decoy.enc", "vault_meta_decoy.txt")
+    }
+    private val locationRepositoryDecoy: LocationRepository by lazy {
+        LocationRepositoryImpl(appContext, "locations_meta_decoy.enc", "locations_meta_decoy.txt")
+    }
+    private val folderRepositoryDecoy: FolderRepository by lazy {
+        FolderRepositoryImpl(appContext, "folders_meta_decoy.enc", "folders_meta_decoy.txt")
+    }
+
+    // === Переключаемые репозитории ===
+    val vaultRepository: VaultRepository
+        get() = if (VaultManager.currentMode == VaultMode.DECOY)
+            vaultRepositoryDecoy else vaultRepositoryReal
+
+    val locationRepository: LocationRepository
+        get() = if (VaultManager.currentMode == VaultMode.DECOY)
+            locationRepositoryDecoy else locationRepositoryReal
+
+    val folderRepository: FolderRepository
+        get() = if (VaultManager.currentMode == VaultMode.DECOY)
+            folderRepositoryDecoy else folderRepositoryReal
 
     val checkPinUseCase by lazy { CheckPinUseCase(pinRepository) }
     val savePinUseCase by lazy { SavePinUseCase(pinRepository) }
     val isFirstLaunchUseCase by lazy { IsFirstLaunchUseCase(pinRepository) }
-    val addFileUseCase by lazy { AddFileUseCase(vaultRepository) }
-    val getFilesUseCase by lazy { GetFilesUseCase(vaultRepository) }
+    
+    // ⚠️ НЕ by lazy: use case создаётся при каждом обращении,
+    // чтобы всегда брать репозиторий ТЕКУЩЕГО режима (REAL/DECOY)
+    val addFileUseCase get() = AddFileUseCase(vaultRepository)
+    val getFilesUseCase get() = GetFilesUseCase(vaultRepository)    
+    
     val clearCacheUseCase by lazy { ClearCacheUseCase(appContext) }
 
     private val _navigateToCalculator = MutableStateFlow(false)

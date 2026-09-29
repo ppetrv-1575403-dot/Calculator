@@ -3,6 +3,7 @@ package com.google.android.calculator.data.secure
 import android.content.Context
 import androidx.security.crypto.EncryptedSharedPreferences
 import androidx.security.crypto.MasterKey
+import com.google.android.calculator.utils.OriginalFileAction
 
 class SecurePreferences(context: Context) {
     private val masterKey = MasterKey.Builder(context)
@@ -25,14 +26,24 @@ class SecurePreferences(context: Context) {
         get() = prefs.getBoolean(KEY_FIRST_LAUNCH, true)
         set(value) = prefs.edit().putBoolean(KEY_FIRST_LAUNCH, value).apply()
 
-    // Добавляем сохранение URI директории
     var defaultDirectoryUri: String?
         get() = prefs.getString(KEY_DIR_URI, null)
         set(value) = prefs.edit().putString(KEY_DIR_URI, value).apply()
 
+    var originalFileAction: OriginalFileAction
+        get() = try {
+            OriginalFileAction.valueOf(
+                prefs.getString(KEY_ORIGINAL_ACTION, null) ?: OriginalFileAction.KEEP.name
+            )
+        } catch (e: Exception) {
+            OriginalFileAction.KEEP
+        }
+        set(value) { prefs.edit().putString(KEY_ORIGINAL_ACTION, value.name).apply() }
+
     companion object {
         private const val KEY_PIN = "vault_pin"
         private const val KEY_FIRST_LAUNCH = "first_launch"
-        private const val KEY_DIR_URI = "default_dir_uri" // <-- Новое
+        private const val KEY_DIR_URI = "default_dir_uri"
+        private const val KEY_ORIGINAL_ACTION = "original_file_action"
     }
 }

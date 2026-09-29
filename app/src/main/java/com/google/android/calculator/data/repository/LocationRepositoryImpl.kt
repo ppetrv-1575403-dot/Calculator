@@ -1,23 +1,30 @@
 package com.google.android.calculator.data.repository
 
 import android.content.Context
+import com.google.android.calculator.data.secure.EncryptedMetaStore
 import com.google.android.calculator.domain.model.SavedLocation
 import com.google.android.calculator.domain.repository.LocationRepository
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
-import java.io.File
 
-class LocationRepositoryImpl(context: Context) : LocationRepository {
+class LocationRepositoryImpl(
+    context: Context,
+    private val fileName: String = "locations_meta.enc",
+    private val legacyFileName: String = "locations_meta.txt"
+) : LocationRepository {
 
-    private val metaFile = File(context.filesDir, "locations_meta.txt")
+    private val metaStore = EncryptedMetaStore(
+        context,
+        fileName = fileName,
+        legacyPlaintextFileName = legacyFileName
+    )
     private val mutex = Mutex()
 
     private fun load(): MutableList<SavedLocation> {
-        try {
-            if (!metaFile.exists()) return mutableListOf()
-            return metaFile.readLines().mapNotNull { line ->
+        return try {
+            metaStore.readLines().mapNotNull { line ->
                 val p = line.split("|||")
                 if (p.size >= 6) SavedLocation(
                     p[0], p[1], p[2],
@@ -27,11 +34,11 @@ class LocationRepositoryImpl(context: Context) : LocationRepository {
                     if (p.size >= 7) p[6].takeIf { it.isNotEmpty() } else null
                 ) else null
             }.toMutableList()
-        } catch (e: Exception) { return mutableListOf() }
+        } catch (e: Exception) { mutableListOf() }
     }
 
     private fun save(list: List<SavedLocation>) {
-        metaFile.writeText(list.joinToString("\n") {
+        metaStore.writeLines(list.map {
             "${it.id}|||${it.name}|||${it.description.replace("\n", " ")}|||${it.latitude}|||${it.longitude}|||${it.photoId ?: ""}|||${it.folderId ?: ""}"
         })
     }

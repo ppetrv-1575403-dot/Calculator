@@ -10,7 +10,9 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
@@ -22,11 +24,13 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import com.google.android.calculator.BuildConfig
 import com.google.android.calculator.R
 import com.google.android.calculator.di.AppContainer
 import com.google.android.calculator.domain.model.SavedLocation
 import com.google.android.calculator.domain.model.VaultFile
 import com.google.android.calculator.domain.model.VaultFolder
+import com.google.android.calculator.utils.FileLogger
 import com.google.android.calculator.utils.PermissionUtils
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -41,7 +45,10 @@ fun VaultScreen(
     onNavigateToPicker: (String) -> Unit,
     onAddLocation: (String) -> Unit,
     onOpenMap: (String) -> Unit,
-    onPreviewFile: (String) -> Unit
+    onPreviewFile: (String) -> Unit,
+    onOpenSettings: () -> Unit,
+    onEditLocation: (String) -> Unit,
+    onAddPhotoLocation: (String) -> Unit
 ) {
     val context = LocalContext.current
     val viewModel = remember {
@@ -51,6 +58,12 @@ fun VaultScreen(
     var fabExpanded by remember { mutableStateOf(false) }
     var showCreateFolderDialog by remember { mutableStateOf(false) }
     var folderName by remember { mutableStateOf("") }
+    var showLogsDialog by remember { mutableStateOf(false) }
+    
+    // Состояния для диалогов подтверждения удаления
+    var fileToDelete by remember { mutableStateOf<VaultFile?>(null) }
+    var locationToDelete by remember { mutableStateOf<SavedLocation?>(null) }
+    var folderToDelete by remember { mutableStateOf<VaultFolder?>(null) }
 
     val hasStoragePermission = PermissionUtils.hasManageExternalStorage()
     val currentFolderId = viewModel.currentFolder?.id ?: ""
@@ -130,12 +143,17 @@ fun VaultScreen(
                             )
                         }
                     }
-                    Spacer(Modifier.height(8.dp))
+                    
                     MiniFab(Icons.Default.AddLocation, "Точка") { fabExpanded = false; onAddLocation(currentFolderId) }
                     Spacer(Modifier.height(8.dp))
+                    
+                    MiniFab(Icons.Default.AddAPhoto, "Фото-точка") { fabExpanded = false; onAddPhotoLocation(currentFolderId) }
+                    Spacer(Modifier.height(8.dp))
+                    
                     MiniFab(Icons.Default.CreateNewFolder, "Папка") { fabExpanded = false; folderName = ""; showCreateFolderDialog = true }
                     Spacer(Modifier.height(8.dp))
                 }
+                
                 FloatingActionButton(
                     onClick = { fabExpanded = !fabExpanded },
                     containerColor = MaterialTheme.colorScheme.primary,
@@ -169,6 +187,15 @@ fun VaultScreen(
                 )
                 if (viewModel.itemToMove != null) {
                     TextButton(onClick = { viewModel.cancelMove() }) { Text("Отмена") }
+                } else {
+                    if (BuildConfig.DEBUG) {
+                        IconButton(onClick = { showLogsDialog = true }) {
+                            Icon(Icons.Default.Description, "Логи")
+                        }
+                    }
+                    IconButton(onClick = onOpenSettings) {
+                        Icon(Icons.Default.Settings, "Настройки")
+                    }
                 }
             }
 
@@ -195,7 +222,7 @@ fun VaultScreen(
                     }
                 }
                 else -> {
-                    LazyColumn(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    LazyColumn(modifier = Modifier.navigationBarsPadding().weight(1f), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                         items(viewModel.items) { item ->
                             when (item) {
                                 is VaultItem.FolderItem -> FolderListItem(
@@ -208,7 +235,7 @@ fun VaultScreen(
                                             viewModel.openFolder(item.folder)
                                         }
                                     },
-                                    onDelete = { viewModel.deleteFolder(item.folder) }
+                                    onDelete = { folderToDelete = item.folder }
                                 )
                                 is VaultItem.LocationItem -> LocationListItem(
                                     location = item.location,
@@ -216,7 +243,7 @@ fun VaultScreen(
                                     moveMode = viewModel.itemToMove != null,
                                     onOpenMap = { if (viewModel.itemToMove == null) onOpenMap(item.location.id) },
                                     onMove = { viewModel.startMove(item) },
-                                    onDelete = { viewModel.deleteLocation(item.location.id) }
+                                    onDelete = { locationToDelete = item.location }
                                 )
                                 is VaultItem.FileItem -> FileListItem(
                                     file = item.file,
@@ -225,7 +252,7 @@ fun VaultScreen(
                                     onPreview = { if (viewModel.itemToMove == null) onPreviewFile(item.file.id) },
                                     onExport = { viewModel.prepareExport(item.file) },
                                     onMove = { viewModel.startMove(item) },
-                                    onDelete = { viewModel.deleteFile(item.file) }
+                                    onDelete = { fileToDelete = item.file }
                                 )
                             }
                         }
@@ -275,6 +302,129 @@ fun VaultScreen(
                 }) { Text("Создать") }
             },
             dismissButton = { TextButton(onClick = { showCreateFolderDialog = false }) { Text("Отмена") } }
+        )
+    }
+
+    // Диалог подтверждения удаления файла
+    if (fileToDelete != null) {
+        AlertDialog(
+            onDismissRequest = { fileToDelete = null },
+            title = { Text("Удалить файл?") },
+            text = { Text("Файл \"${fileToDelete!!.originalName}\" будет удалён безвозвратно.") },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        viewModel.deleteFile(fileToDelete!!)
+                        fileToDelete = null
+                    },
+                    colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.error)
+                ) {
+                    Text("Удалить")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { fileToDelete = null }) { Text("Отмена") }
+            }
+        )
+    }
+
+    // Диалог подтверждения удаления локации
+    if (locationToDelete != null) {
+        AlertDialog(
+            onDismissRequest = { locationToDelete = null },
+            title = { Text("Удалить точку?") },
+            text = { Text("Точка \"${locationToDelete!!.name}\" будет удалена безвозвратно.") },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        viewModel.deleteLocation(locationToDelete!!.id)
+                        locationToDelete = null
+                    },
+                    colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.error)
+                ) {
+                    Text("Удалить")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { locationToDelete = null }) { Text("Отмена") }
+            }
+        )
+    }
+
+    // Диалог подтверждения удаления папки
+    if (folderToDelete != null) {
+        AlertDialog(
+            onDismissRequest = { folderToDelete = null },
+            title = { Text("Удалить папку?") },
+            text = { Text("Папка \"${folderToDelete!!.name}\" и всё её содержимое будут удалены безвозвратно.") },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        viewModel.deleteFolder(folderToDelete!!)
+                        folderToDelete = null
+                    },
+                    colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.error)
+                ) {
+                    Text("Удалить")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { folderToDelete = null }) { Text("Отмена") }
+            }
+        )
+    }
+
+    if (BuildConfig.DEBUG && showLogsDialog) {
+        val logContent = remember { FileLogger.getLogContent(context) }
+        val crashContent = remember { FileLogger.getCrashContent(context) }
+        val scrollState = rememberScrollState()
+        
+        AlertDialog(
+            onDismissRequest = { showLogsDialog = false },
+            title = { Text("Логи приложения") },
+            text = {
+                Column {
+                    Text(
+                        "Путь: ${FileLogger.getLogFilePath(context)}",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(400.dp)
+                            .verticalScroll(scrollState)
+                    ) {
+                        if (crashContent.isNotEmpty() && crashContent != "Крашей не записано") {
+                            Text(
+                                "=== КРАШИ ===\n$crashContent\n",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.error
+                            )
+                        }
+                        Text(
+                            logContent,
+                            style = MaterialTheme.typography.bodySmall
+                        )
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { showLogsDialog = false }) { Text("Закрыть") }
+            },
+            dismissButton = {
+                TextButton(onClick = {
+                    val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
+                    val clip = android.content.ClipData.newPlainText(
+                        "Логи",
+                        "=== КРАШИ ===\n$crashContent\n\n=== ЛОГИ ===\n$logContent"
+                    )
+                    clipboard.setPrimaryClip(clip)
+                    android.widget.Toast.makeText(context, "Логи скопированы", android.widget.Toast.LENGTH_SHORT).show()
+                }) { Text("Копировать") }
+            }
         )
     }
 }
@@ -330,7 +480,7 @@ private fun LocationListItem(
             Icon(Icons.Default.Place, null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(32.dp).padding(end = 12.dp))
             Column(Modifier.weight(1f)) {
                 Text(location.name, style = MaterialTheme.typography.bodyLarge, color = MaterialTheme.colorScheme.onSurface, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                Text("%.5f, %.5f".format(location.latitude, location.longitude), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text("%.6f, %.6f".format(location.latitude, location.longitude), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
             if (location.photoId != null) Icon(Icons.Default.Image, "Фото", tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(20.dp).padding(end = 4.dp))
             if (!moveMode) {
@@ -351,7 +501,6 @@ private fun FileListItem(
     onMove: () -> Unit,
     onDelete: () -> Unit
 ) {
-    var showDeleteConfirm by remember { mutableStateOf(false) }
     Card(
         onClick = onPreview,
         colors = CardDefaults.cardColors(
@@ -374,20 +523,8 @@ private fun FileListItem(
             if (!moveMode) {
                 IconButton(onClick = onMove) { Icon(Icons.Default.DriveFileMove, "Переместить", tint = MaterialTheme.colorScheme.onSurfaceVariant) }
                 IconButton(onClick = onExport) { Icon(Icons.Default.Share, "Экспорт", tint = MaterialTheme.colorScheme.onSurfaceVariant) }
-                IconButton(onClick = { showDeleteConfirm = true }) { Icon(Icons.Default.Delete, "Удалить", tint = MaterialTheme.colorScheme.error) }
+                IconButton(onClick = onDelete) { Icon(Icons.Default.Delete, "Удалить", tint = MaterialTheme.colorScheme.error) }
             }
         }
-    }
-    if (showDeleteConfirm) {
-        AlertDialog(
-            onDismissRequest = { showDeleteConfirm = false },
-            title = { Text("Удалить файл?") },
-            text = { Text("Файл \"${file.originalName}\" будет удалён безвозвратно.") },
-            confirmButton = {
-                TextButton(onClick = { onDelete(); showDeleteConfirm = false },
-                    colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.error)) { Text("Удалить") }
-            },
-            dismissButton = { TextButton(onClick = { showDeleteConfirm = false }) { Text("Отмена") } }
-        )
     }
 }

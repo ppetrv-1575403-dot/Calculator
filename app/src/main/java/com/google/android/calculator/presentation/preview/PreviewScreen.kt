@@ -57,34 +57,103 @@ fun PreviewScreen(fileId: String, appContainer: AppContainer, onBack: () -> Unit
 
     val currentTempFile = tempFile
     val currentTextContent = textContent
+    val isTextFile = FileTypeUtils.isTextFile(fileName, mimeType) && currentTextContent != null
 
     Scaffold(
         contentWindowInsets = WindowInsets(0, 0, 0, 0),
         topBar = {
             TopAppBar(
-                title = { Text(fileName, maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.titleMedium) },
+                title = {
+                    Text(
+                        fileName,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        style = MaterialTheme.typography.titleMedium
+                    )
+                },
                 navigationIcon = {
-                    IconButton(onClick = onBack) { @Suppress("DEPRECATION") Icon(Icons.Default.ArrowBack, "Назад") }
+                    IconButton(onClick = onBack) {
+                        @Suppress("DEPRECATION")
+                        Icon(Icons.Default.ArrowBack, "Назад")
+                    }
+                },
+                actions = {
+                    // Кнопка копирования в TopBar для текстовых файлов
+                    if (isTextFile && currentTextContent != null) {
+                        IconButton(onClick = {
+                            copyToClipboard(context, currentTextContent)
+                        }) {
+                            Icon(Icons.Default.ContentCopy, "Копировать текст")
+                        }
+                    }
                 }
             )
         }
     ) { padding ->
-        Box(Modifier
+        Box(
+            Modifier
                 .fillMaxSize()
                 .navigationBarsPadding()
                 .padding(padding)
-           ) {
+        ) {
             when {
                 isLoading -> CircularProgressIndicator(Modifier.align(Alignment.Center))
                 mimeType.startsWith("image/") && currentTempFile != null -> ImageViewer(currentTempFile)
-                FileTypeUtils.isTextFile(fileName, mimeType) && currentTextContent != null ->
-                    TextViewer(fileName, currentTextContent) { copyToClipboard(context, it) }
+                isTextFile && currentTextContent != null -> {
+                    // Колонка: текст скроллится, статистика внизу зафиксирована
+                    Column(Modifier.fillMaxSize()) {
+                        // Скроллируемый текст
+                        Box(Modifier.weight(1f).fillMaxWidth()) {
+                            TextViewer(fileName, currentTextContent)
+                        }
+
+                        // Нижняя панель со статистикой (не скроллится)
+                        Surface(
+                            modifier = Modifier.fillMaxWidth(),
+                            tonalElevation = 2.dp,
+                            shadowElevation = 4.dp,
+                            color = MaterialTheme.colorScheme.surface.copy(alpha = 0.95f)
+                        ) {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 16.dp, vertical = 10.dp),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                val charCount = currentTextContent.length
+                                val lineCount = currentTextContent.count { it == '\n' } + 1
+                                val wordCount = currentTextContent.split(Regex("\\s+")).count { it.isNotBlank() }
+
+                                StatItem("Символы", charCount.toString())
+                                StatItem("Строки", lineCount.toString())
+                                StatItem("Слова", wordCount.toString())
+                            }
+                        }
+                    }
+                }
                 else -> UnsupportedView()
             }
         }
     }
 
     DisposableEffect(Unit) { onDispose { tempFile?.delete() } }
+}
+
+@Composable
+private fun StatItem(label: String, value: String) {
+    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+        Text(
+            text = value,
+            style = MaterialTheme.typography.titleMedium,
+            color = MaterialTheme.colorScheme.onSurface
+        )
+        Text(
+            text = label,
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+    }
 }
 
 @Composable
@@ -132,9 +201,14 @@ private fun ImageViewer(imageFile: File) {
 }
 
 @Composable
-private fun TextViewer(fileName: String, text: String, onCopy: (String) -> Unit) {
+private fun TextViewer(fileName: String, text: String) {
     val lang = FileTypeUtils.getLanguageName(fileName.substringAfterLast(".", ""))
-    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp)) {
+    Column(
+        Modifier
+            .fillMaxSize()
+            .verticalScroll(rememberScrollState())
+            .padding(16.dp)
+    ) {
         if (lang != "Text") {
             Surface(shape = MaterialTheme.shapes.small, color = MaterialTheme.colorScheme.primaryContainer,
                 modifier = Modifier.padding(bottom = 8.dp)) {
@@ -145,16 +219,6 @@ private fun TextViewer(fileName: String, text: String, onCopy: (String) -> Unit)
         SelectionContainer {
             Text(text, Modifier.fillMaxWidth(), style = MaterialTheme.typography.bodyLarge,
                 color = MaterialTheme.colorScheme.onSurface, fontFamily = FontFamily.Monospace)
-        }
-        Spacer(Modifier.height(16.dp))
-        Text("Символов: ${text.length} • Строк: ${text.count { it == '\n' } + 1}",
-            style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.padding(bottom = 8.dp))
-        Button(onClick = { onCopy(text) }, modifier = Modifier.fillMaxWidth(),
-            colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)) {
-            Icon(Icons.Default.ContentCopy, null, Modifier.size(20.dp))
-            Spacer(Modifier.width(8.dp))
-            Text("Копировать весь текст")
         }
     }
 }
@@ -173,4 +237,5 @@ private fun UnsupportedView() {
 private fun copyToClipboard(context: Context, text: String) {
     val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
     clipboard.setPrimaryClip(ClipData.newPlainText("vault_text", text))
+    android.widget.Toast.makeText(context, "Текст скопирован", android.widget.Toast.LENGTH_SHORT).show()
 }

@@ -1,4 +1,4 @@
-package com.google.android.calculator
+package com.google.android.calculator.presentation
 
 import android.content.BroadcastReceiver
 import android.content.Context
@@ -21,16 +21,17 @@ import com.google.android.calculator.di.AppContainer
 import com.google.android.calculator.domain.usecase.ClearCacheUseCase
 import com.google.android.calculator.presentation.theme.VaultTheme
 import com.google.android.calculator.presentation.AppNavigator
-import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
+import org.maplibre.android.MapLibre
+
+import com.google.android.calculator.R
+import com.google.android.calculator.BuildConfig
 
 class MainActivity : ComponentActivity() {
 
     private lateinit var appContainer: AppContainer
     private lateinit var clearCacheUseCase: ClearCacheUseCase
-    private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
     private var isVaultOpen = false
 
     private val screenOffReceiver = object : BroadcastReceiver() {
@@ -45,11 +46,13 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
 
         // 1. Запрет скриншотов и записи экрана (в т.ч. чёрная превьюшка в recents)
-        window.setFlags(
-            android.view.WindowManager.LayoutParams.FLAG_SECURE,
-            android.view.WindowManager.LayoutParams.FLAG_SECURE
-        )
-
+        if(!BuildConfig.DEBUG) {
+            window.setFlags(
+                android.view.WindowManager.LayoutParams.FLAG_SECURE,
+                android.view.WindowManager.LayoutParams.FLAG_SECURE
+            )
+        }
+        
         // 2. Маскировка записи в списке задач (если вдруг приложение мелькнёт в recents)
         val name = getString(R.string.app_name)
         setTaskDescription(
@@ -60,7 +63,8 @@ class MainActivity : ComponentActivity() {
         
         enableEdgeToEdge()
 
-        appContainer = AppContainer(applicationContext)
+        appContainer = MyApplication.app?.appContainer as AppContainer
+        
         clearCacheUseCase = ClearCacheUseCase(applicationContext)
 
         val filter = IntentFilter(Intent.ACTION_SCREEN_OFF)
@@ -70,6 +74,9 @@ class MainActivity : ComponentActivity() {
             registerReceiver(screenOffReceiver, filter)
         }
 
+        // Инициализация MapLibre
+        MapLibre.getInstance(this)
+    
         setContent {
             VaultTheme {
                 Surface(
@@ -115,7 +122,7 @@ class MainActivity : ComponentActivity() {
     }
 
     /**
-     * Единая функция очистки: удаляет кэш если хранилище открыто,
+     * Единая функция очистки: удаляет кэш если хранилище было открыто,
      * и ВСЕГДА убирает приложение из списка недавних.
      */
     private fun cleanupAndRemoveFromRecents() {
@@ -125,10 +132,12 @@ class MainActivity : ComponentActivity() {
             return
         }
 
-        // Если хранилище было открыто — очищаем кэш
+        // Если хранилище было открыто — очищаем кэш СИНХРОННО, до finishAndRemoveTask().
+        // Раньше очистка запускалась асинхронной корутиной и ничего не гарантировала —
+        // приложение могло уйти в фон/процесс завершиться раньше, чем она успевала отработать.
         if (isVaultOpen) {
             Log.d("MainActivity", "Vault was open, clearing cache")
-            serviceScope.launch(Dispatchers.IO) {
+            runBlocking(Dispatchers.IO) {
                 clearCacheUseCase()
             }
         }

@@ -3,6 +3,7 @@ package com.google.android.calculator.data.repository
 import android.content.Context
 import android.net.Uri
 import com.google.android.calculator.data.crypto.CryptoManager
+import com.google.android.calculator.data.secure.EncryptedMetaStore
 import com.google.android.calculator.domain.model.VaultFile
 import com.google.android.calculator.domain.repository.VaultRepository
 import kotlinx.coroutines.Dispatchers
@@ -11,10 +12,20 @@ import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import java.io.File
 
-class VaultRepositoryImpl(private val context: Context, private val crypto: CryptoManager) : VaultRepository {
+class VaultRepositoryImpl(
+    private val context: Context,
+    private val crypto: CryptoManager,
+    vaultDirName: String = "vault",
+    metaFileName: String = "vault_meta.enc",
+    metaLegacyFileName: String = "vault_meta.txt"
+) : VaultRepository {
 
-    private val vaultDir = File(context.filesDir, "vault").apply { mkdirs() }
-    private val metaFile = File(context.filesDir, "vault_meta.txt")
+    private val vaultDir = File(context.filesDir, vaultDirName).apply { mkdirs() }
+    private val metaStore = EncryptedMetaStore(
+        context,
+        fileName = metaFileName,
+        legacyPlaintextFileName = metaLegacyFileName
+    )
     private val mutex = Mutex()
 
     private data class Meta(
@@ -26,20 +37,19 @@ class VaultRepositoryImpl(private val context: Context, private val crypto: Cryp
     )
 
     private fun loadMeta(): MutableList<Meta> {
-        try {
-            if (!metaFile.exists()) return mutableListOf()
-            return metaFile.readLines().mapNotNull { line ->
+        return try {
+            metaStore.readLines().mapNotNull { line ->
                 val p = line.split("|||")
                 if (p.size >= 4) Meta(
                     p[0], p[1], p[2], p[3],
                     if (p.size >= 5) p[4].takeIf { it.isNotEmpty() } else null
                 ) else null
             }.toMutableList()
-        } catch (e: Exception) { return mutableListOf() }
+        } catch (e: Exception) { mutableListOf() }
     }
 
     private fun saveMeta(list: List<Meta>) {
-        metaFile.writeText(list.joinToString("\n") {
+        metaStore.writeLines(list.map {
             "${it.id}|||${it.originalName}|||${it.encName}|||${it.mime}|||${it.folderId ?: ""}"
         })
     }

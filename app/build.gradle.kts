@@ -17,6 +17,7 @@ android {
 
     buildFeatures {
         compose = true
+        buildConfig = true
     }
     composeOptions {
         kotlinCompilerExtensionVersion = "1.5.4"
@@ -65,6 +66,9 @@ android {
 }
 
 dependencies {
+    // Десугаринг — добавляет недостающие Java SE классы (javax.lang.model и т.д.)
+    coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.0.4")
+    
     implementation("androidx.core:core-ktx:1.12.0")
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.7.0")
     implementation("androidx.lifecycle:lifecycle-process:2.7.0")
@@ -81,13 +85,26 @@ dependencies {
     // OSMBonusPack для онлайн-роутинга
     implementation("com.github.MKergall:osmbonuspack:6.9.0")
 
-    // MapLibre GL Native для векторных карт
-    implementation("org.maplibre.gl:android-sdk:11.5.0")
-
-    // Annotation plugin для маркеров в MapLibre
+    // MapLibre
+    implementation("org.maplibre.gl:android-sdk:11.7.0")
     implementation("org.maplibre.gl:android-plugin-annotation-v9:3.0.0")
 
-    // GraphHopper для оффлайн-роутинга
-    implementation("com.graphhopper:graphhopper-core:9.1")
-    implementation("org.slf4j:slf4j-simple:2.0.9")
+    // GraphHopper 5.0 для оффлайн-роутинга
+    implementation("com.graphhopper:graphhopper-core:5.0") {
+        // Исключаем проблемные транзитивные зависимости
+        exclude(group = "com.fasterxml.jackson.dataformat", module = "jackson-dataformat-xml")
+    }
+    
+    // ВЕРСИИ, СОВМЕСТИМЫЕ С GraphHopper 5.0:
+    implementation("org.slf4j:slf4j-android:1.7.36")
+    implementation("net.sf.trove4j:trove4j:3.0.3")
+    implementation("com.carrotsearch:hppc:0.7.3")  // ← ВАЖНО: 0.7.3, а не 0.9.1!
+    implementation("com.fasterxml.jackson.core:jackson-databind:2.15.2")
+    
+    // Локальный сервер
+    implementation("org.nanohttpd:nanohttpd:2.3.1")
+
+    // OCR
+    implementation("androidx.exifinterface:exifinterface:1.3.7")
+    implementation("com.google.mlkit:text-recognition:16.0.1")
 }
