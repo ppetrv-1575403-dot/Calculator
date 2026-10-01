@@ -31,6 +31,7 @@ import com.google.android.calculator.domain.model.SavedLocation
 import com.google.android.calculator.domain.model.VaultFile
 import com.google.android.calculator.domain.model.VaultFolder
 import com.google.android.calculator.utils.FileLogger
+import com.google.android.calculator.utils.FolderExporter
 import com.google.android.calculator.utils.PermissionUtils
 import com.google.android.calculator.utils.VaultManager
 import com.google.android.calculator.utils.VaultMode
@@ -67,6 +68,12 @@ fun VaultScreen(
     var locationToDelete by remember { mutableStateOf<SavedLocation?>(null) }
     var folderToDelete by remember { mutableStateOf<VaultFolder?>(null) }
 
+    // === Состояния для экспорта/импорта папок ===
+    var showExportDialog by remember { mutableStateOf<VaultFolder?>(null) }
+    var showImportDialog by remember { mutableStateOf(false) }
+    var isExporting by remember { mutableStateOf(false) }
+    var isImporting by remember { mutableStateOf(false) }
+
     val hasStoragePermission = PermissionUtils.hasManageExternalStorage()
     val currentFolderId = viewModel.currentFolder?.id ?: ""
 
@@ -79,6 +86,29 @@ fun VaultScreen(
     val isDecoyMode = VaultManager.currentMode == VaultMode.DECOY
     
     LaunchedEffect(Unit) { appContainer.vaultRefresh.collect { viewModel.refresh() } }
+
+    // === Launcher для импорта ZIP ===
+    val importLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocument()
+    ) { uri: Uri? ->
+        if (uri != null) {
+            isImporting = true
+            scope.launch {
+                val count = FolderExporter.importFolder(
+                    context = context,
+                    zipUri = uri,
+                    targetFolderId = viewModel.currentFolder?.id,
+                    vaultRepository = appContainer.vaultRepository,
+                    folderRepository = appContainer.folderRepository
+                )
+                withContext(Dispatchers.Main) {
+                    Toast.makeText(context, "✅ Импортировано файлов: $count", Toast.LENGTH_LONG).show()
+                    appContainer.requestVaultRefresh()
+                }
+                isImporting = false
+            }
+        }
+    }
 
     val exportLauncher = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("*/*")) { uri ->
         appContainer.setFileOperationInProgress(false)
@@ -157,6 +187,9 @@ fun VaultScreen(
                     }
                     
                     MiniFab(Icons.Default.CreateNewFolder, "Папка") { fabExpanded = false; folderName = ""; showCreateFolderDialog = true }
+                    Spacer(Modifier.height(8.dp))
+                    
+                    MiniFab(Icons.Default.Download, "Импорт") { fabExpanded = false; showImportDialog = true }
                     Spacer(Modifier.height(8.dp))
                 }
                 
@@ -241,7 +274,8 @@ fun VaultScreen(
                                             viewModel.openFolder(item.folder)
                                         }
                                     },
-                                    onDelete = { folderToDelete = item.folder }
+                                    onDelete = { folderToDelete = item.folder },
+                                    onExport = { showExportDialog = item.folder }
                                 )
                                 is VaultItem.LocationItem -> LocationListItem(
                                     location = item.location,
@@ -294,6 +328,74 @@ fun VaultScreen(
                 }
             }
         }
+    }
+
+    // === Диалог подтверждения экспорта папки ===
+    showExportDialog?.let { folder ->
+        AlertDialog(
+            onDismissRequest = { showExportDialog = null },
+            title = { Text("Экспорт папки") },
+            text = { Text("Экспортировать папку «${folder.name}» со всем содержимым в ZIP-архив?\n\nФайл будет сохранён в Downloads.") },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        showExportDialog = null
+                        isExporting = true
+                        scope.launch {
+                            val uri = FolderExporter.exportFolder(
+                                context = context,
+                                folder = folder,
+                                vaultRepository = appContainer.vaultRepository,
+                                folderRepository = appContainer.folderRepository
+                            )
+                            withContext(Dispatchers.Main) {
+                                if (uri != null) {
+                                    Toast.makeText(context, "✅ Экспортировано в Downloads", Toast.LENGTH_LONG).show()
+                                } else {
+                                    Toast.makeText(context, "❌ Ошибка экспорта", Toast.LENGTH_LONG).show()
+                                }
+                            }
+                            isExporting = false
+                        }
+                    }
+                ) { Text("Экспортировать") }
+            },
+            dismissButton = { TextButton(onClick = { showExportDialog = null }) { Text("Отмена") } }
+        )
+    }
+
+    // === Диалог подтверждения импорта ===
+    if (showImportDialog) {
+        AlertDialog(
+            onDismissRequest = { showImportDialog = false },
+            title = { Text("Импорт папки") },
+            text = { Text("Выберите ZIP-архив для импорта.\n\nСтруктура папок будет воссоздана в текущей папке.") },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        showImportDialog = false
+                        importLauncher.launch(arrayOf("application/zip", "application/x-zip-compressed"))
+                    }
+                ) { Text("Выбрать файл") }
+            },
+            dismissButton = { TextButton(onClick = { showImportDialog = false }) { Text("Отмена") } }
+        )
+    }
+
+    // === Прогресс экспорта/импорта ===
+    if (isExporting || isImporting) {
+        AlertDialog(
+            onDismissRequest = { },
+            title = { Text(if (isExporting) "Экспорт..." else "Импорт...") },
+            text = {
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    CircularProgressIndicator()
+                    Spacer(Modifier.height(16.dp))
+                    Text(if (isExporting) "Расшифровка и упаковка файлов" else "Распаковка и шифрование файлов")
+                }
+            },
+            confirmButton = { }
+        )
     }
 
     if (showCreateFolderDialog) {
@@ -447,7 +549,13 @@ private fun MiniFab(icon: ImageVector, label: String, onClick: () -> Unit) {
 }
 
 @Composable
-private fun FolderListItem(folder: VaultFolder, isMoveTarget: Boolean, onOpen: () -> Unit, onDelete: () -> Unit) {
+private fun FolderListItem(
+    folder: VaultFolder,
+    isMoveTarget: Boolean,
+    onOpen: () -> Unit,
+    onDelete: () -> Unit,
+    onExport: () -> Unit
+) {
     Card(
         onClick = onOpen,
         colors = CardDefaults.cardColors(
@@ -460,6 +568,9 @@ private fun FolderListItem(folder: VaultFolder, isMoveTarget: Boolean, onOpen: (
             Text(folder.name, style = MaterialTheme.typography.bodyLarge, color = MaterialTheme.colorScheme.onSurface,
                 modifier = Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis)
             if (!isMoveTarget) {
+                IconButton(onClick = onExport) {
+                    Icon(Icons.Default.Upload, "Экспортировать", tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
                 IconButton(onClick = onDelete) { Icon(Icons.Default.Delete, "Удалить", tint = MaterialTheme.colorScheme.error) }
             }
         }
