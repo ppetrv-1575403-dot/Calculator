@@ -1,4 +1,4 @@
-package com.google.android.calculator.presentation.vault
+ package com.google.android.calculator.presentation.vault
 
 import android.content.Context
 import android.content.Intent
@@ -21,9 +21,12 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
 import com.google.android.calculator.BuildConfig
 import com.google.android.calculator.R
 import com.google.android.calculator.di.AppContainer
@@ -63,6 +66,25 @@ fun VaultScreen(
     var folderName by remember { mutableStateOf("") }
     var showLogsDialog by remember { mutableStateOf(false) }
     
+    // === ВАЖНО: hasStoragePermission теперь mutableStateOf ===
+    var hasStoragePermission by remember { 
+        mutableStateOf(PermissionUtils.hasManageExternalStorage()) 
+    }
+    
+    // === Обновляем hasStoragePermission при onResume ===
+    val lifecycleOwner = LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) {
+                hasStoragePermission = PermissionUtils.hasManageExternalStorage()
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose {
+            lifecycleOwner.lifecycle.removeObserver(observer)
+        }
+    }
+    
     // Состояния для диалогов подтверждения удаления
     var fileToDelete by remember { mutableStateOf<VaultFile?>(null) }
     var locationToDelete by remember { mutableStateOf<SavedLocation?>(null) }
@@ -74,13 +96,14 @@ fun VaultScreen(
     var isExporting by remember { mutableStateOf(false) }
     var isImporting by remember { mutableStateOf(false) }
 
-    val hasStoragePermission = PermissionUtils.hasManageExternalStorage()
     val currentFolderId = viewModel.currentFolder?.id ?: ""
 
     val permissionSettingsLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.StartActivityForResult()
     ) {
         appContainer.setFileOperationInProgress(false)
+        // === Обновляем разрешение сразу при возврате из настроек ===
+        hasStoragePermission = PermissionUtils.hasManageExternalStorage()
     }
 
     val isDecoyMode = VaultManager.currentMode == VaultMode.DECOY
