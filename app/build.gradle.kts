@@ -13,6 +13,9 @@ android {
         targetSdk = 34
         versionCode = 37
         versionName = "9.2 (941607204)"
+        ndk {
+            abiFilters += listOf("arm64-v8a", "armeabi-v7a")
+        }
     }
 
     buildFeatures {
@@ -63,6 +66,11 @@ android {
         }
     }
 
+    //packagingOptions {
+    //    jniLibs {
+    //        useLegacyPackaging = true   // .so хранятся в APK сжатыми (deflate)
+    //    }
+    //}
 }
 
 dependencies {
