@@ -10,7 +10,9 @@ data class OfflineRegion(
     val latSouth: Double,
     val lonWest: Double,
     val minZoom: Int,
-    val maxZoom: Int
+    val maxZoom: Int,
+    val approximateSizeMb: Int,
+    val title: String
 )
 
 data class OfflineRegionModel(

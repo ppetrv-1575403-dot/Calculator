@@ -52,7 +52,6 @@ fun OfflineMapsScreen(onBack: () -> Unit) {
         refreshDownloaded()
     }
 
-    // ⭐ Автообновление списка при COMPLETED / ERROR
     val allStatuses = regions.map { region ->
         MapDownloadManager.getState(region.id).collectAsState().value.status
     }
@@ -81,11 +80,9 @@ fun OfflineMapsScreen(onBack: () -> Unit) {
                             scope.launch {
                                 val result = OfflineRegions.refreshFromServer()
                                 if (result.isSuccess) {
-                                    // Обновляем список регионов в UI
-                                    // TODO: добавить State для регионов
                                     android.widget.Toast.makeText(
                                         context,
-                                        "✅ Список обнов9лён: ${regions.size} регионов",
+                                        "✅ Список обновлён: ${regions.size} регионов",
                                         android.widget.Toast.LENGTH_SHORT
                                     ).show()
                                 } else {
@@ -108,10 +105,21 @@ fun OfflineMapsScreen(onBack: () -> Unit) {
         }
     ) { padding ->
         LazyColumn(
-            Modifier.fillMaxSize().padding(padding).padding(16.dp),
+            Modifier
+                .fillMaxSize()
+                //.statusBarsPadding()
+                .navigationBarsPadding()
+                .padding(padding)
+                .padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
-            item { Text("Регионы", style = MaterialTheme.typography.titleSmall) }
+            item {
+                Text(
+                    "Регионы",
+                    style = MaterialTheme.typography.titleSmall,
+                    modifier = Modifier.padding(bottom = 4.dp)
+                )
+            }
 
             items(regions, key = { it.id }) { region ->
                 RegionRow(
@@ -122,8 +130,14 @@ fun OfflineMapsScreen(onBack: () -> Unit) {
             }
 
             item {
-                HorizontalDivider(Modifier.padding(vertical = 8.dp))
-                Text("Загруженные карты", style = MaterialTheme.typography.titleSmall)
+                Spacer(Modifier.height(8.dp))
+                HorizontalDivider()
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    "Загруженные карты",
+                    style = MaterialTheme.typography.titleSmall,
+                    modifier = Modifier.padding(bottom = 4.dp)
+                )
             }
 
             if (downloaded.isEmpty()) {
@@ -223,7 +237,13 @@ private fun RegionRow(
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Column(Modifier.weight(1f)) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text(region.name, style = MaterialTheme.typography.bodyMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        Text(
+                            region.title,
+                            style = MaterialTheme.typography.bodyMedium,
+                            maxLines = 2,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.weight(1f, fill = false)
+                        )
                         if (hasCards) {
                             Spacer(Modifier.width(6.dp))
                             Icon(Icons.Default.CheckCircle, "Карты", tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(16.dp))
@@ -233,6 +253,7 @@ private fun RegionRow(
                             Icon(Icons.Default.AltRoute, "Граф", tint = MaterialTheme.colorScheme.tertiary, modifier = Modifier.size(16.dp))
                         }
                     }
+                    Spacer(Modifier.height(2.dp))
                     Text(
                         when (state.status) {
                             MapDownloadManager.Status.DOWNLOADING -> {
@@ -352,7 +373,12 @@ private fun DownloadedRegionRow(
             )
             Spacer(Modifier.width(12.dp))
             Column(Modifier.weight(1f)) {
-                Text(info.name, style = MaterialTheme.typography.bodyMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Text(
+                    info.name,
+                    style = MaterialTheme.typography.bodyMedium,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis
+                )
 
                 val parts = mutableListOf<String>()
                 parts.add("Карты: ${info.sizeBytes / 1024 / 1024} МБ")
@@ -393,7 +419,7 @@ private fun DownloadConfirmDialog(
         },
         text = {
             Column {
-                Text("«${region.name}» (зум ${region.minZoom}-${region.maxZoom})")
+                Text("«${region.title}» (зум ${region.minZoom}-${region.maxZoom})")
                 Spacer(Modifier.height(8.dp))
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Icon(

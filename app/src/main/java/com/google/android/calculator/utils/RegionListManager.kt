@@ -86,6 +86,7 @@ object RegionListManager {
                 val obj = regionsArray.getJSONObject(i)
                 val id = obj.optString("id", "region_$i")
                 val name = obj.optString("name", "Регион $i")
+                val title = obj.optString("title", "Регион $i")
                 val latNorth = obj.optDouble("latNorth")
                 val lonEast = obj.optDouble("lonEast")
                 val latSouth = obj.optDouble("latSouth")
@@ -98,10 +99,14 @@ object RegionListManager {
                     OfflineRegion(
                         id = id,
                         name = name,
-                        boundingBox = BoundingBox(latNorth, lonEast, latSouth, lonWest),
+                        latNorth = latNorth,
+                        lonEast = lonEast,
+                        latSouth = latSouth,
+                        lonWest = lonWest,
                         minZoom = minZoom,
                         maxZoom = maxZoom,
-                        approximateSizeMb = sizeMb
+                        approximateSizeMb = sizeMb,
+                        title = title
                     )
                 )
             }

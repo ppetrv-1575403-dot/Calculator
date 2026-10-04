@@ -4,6 +4,7 @@ import android.content.Context
 import android.os.Handler
 import android.os.Looper
 import java.io.File
+import com.google.android.calculator.utils.OfflineRegionModel
 
 object OfflineMapManager {
     private const val TAG = "OfflineMapManager"
@@ -57,7 +58,7 @@ object OfflineMapManager {
                     ?: return@mapNotNull null
                 DownloadedRegionInfo(
                     regionId = regionId,
-                    name = OfflineRegions.getRegionById(regionId)?.name ?: regionId,
+                    name = OfflineRegions.getRegionById(regionId)?.title ?: regionId,
                     sizeBytes = file.length()
                 )
             }
@@ -147,17 +148,6 @@ object OfflineMapManager {
         String(android.util.Base64.decode(s, android.util.Base64.URL_SAFE or android.util.Base64.NO_WRAP), Charsets.UTF_8)
     } catch (e: Exception) { null }
 }
-
-data class OfflineRegionModel(
-    val id: String,
-    val name: String,
-    val latNorth: Double,
-    val lonEast: Double,
-    val latSouth: Double,
-    val lonWest: Double,
-    val minZoom: Int,
-    val maxZoom: Int
-)
 
 data class DownloadedRegionInfo(
     val regionId: String,

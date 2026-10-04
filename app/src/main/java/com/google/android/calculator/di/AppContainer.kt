@@ -22,6 +22,7 @@ import com.google.android.calculator.utils.VaultMode
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import com.google.android.calculator.utils.MapStorage
+import com.google.android.calculator.utils.OfflineRegions
 
 class AppContainer(context: Context) {
     private val appContext = context.applicationContext

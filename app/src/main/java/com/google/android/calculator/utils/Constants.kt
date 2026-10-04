@@ -1,7 +1,7 @@
 package com.google.android.calculator.utils
 
 object Constants {
-    val githubUserName = "ppetrv-1575403-dot"
+    const val githubUserName = "ppetrv-1575403-dot"
 
     private const val BASE_DOWNLOAD_URL = "https://github.com/$githubUserName/map-tiles/releases/download/maps"
     

@@ -6,6 +6,7 @@ import kotlinx.coroutines.withContext
 import org.json.JSONObject
 import java.io.File
 import java.net.URL
+import com.google.android.calculator.utils.Constants
 
 /**
  * Провайдер списка регионов для оффлайн-карт и графов.
@@ -15,10 +16,11 @@ object RegionsProvider {
 
     private const val REGIONS_FILENAME = "regions.json"
     private const val GRAPHS_FILENAME = "graphs.json"
-
+ 
     /** URL для скачивания обновлённого списка (замени на свой) */
-    private const val REGIONS_URL = "https://raw.githubusercontent.com/yourusername/yourrepo/main/regions.json"
-    private const val GRAPHS_URL = "https://raw.githubusercontent.com/yourusername/yourrepo/main/graphs.json"
+    private const val baseUrl = "https://raw.githubusercontent.com/${Constants.githubUserName}/map-tiles/main"
+    private const val REGIONS_URL = "$baseUrl/$REGIONS_FILENAME"
+    private const val GRAPHS_URL = "$baseUrl/$GRAPHS_FILENAME"
 
     /**
      * Загрузить регионы: сначала из кэша, потом из assets.
@@ -114,6 +116,7 @@ object RegionsProvider {
             val regionObj = regionsArray.getJSONObject(i)
             
             val name = regionObj.getString("name")
+            val title = regionObj.getString("title")
             val bbox = regionObj.getString("bbox").split(",").map { it.trim().toDouble() }
             val maxzoom = if (regionObj.has("maxzoom")) regionObj.getInt("maxzoom") else 15
             
@@ -124,19 +127,21 @@ object RegionsProvider {
             val latNorth = bbox[3]
             
             // Название для отображения: преобразуем ID в читаемый вид
-            val displayName = name.replace("_", " ").split(" ").joinToString(" ") { 
-                it.replaceFirstChar { char -> char.uppercase() } 
-            }
+            //val displayName = name.replace("_", " ").split(" ").joinToString(" ") { 
+            //    it.replaceFirstChar { char -> char.uppercase() } 
+            //}
             
             OfflineRegion(
                 id = name,
-                name = displayName,
+                name = name,
                 latNorth = latNorth,
                 lonEast = lonEast,
                 latSouth = latSouth,
                 lonWest = lonWest,
                 minZoom = 0,
-                maxZoom = maxzoom
+                maxZoom = maxzoom,
+                0,
+                title
             )
         }
     }
