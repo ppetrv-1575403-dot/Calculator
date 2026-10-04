@@ -21,12 +21,14 @@ import com.google.android.calculator.utils.VaultManager
 import com.google.android.calculator.utils.VaultMode
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import com.google.android.calculator.utils.MapStorage
 
 class AppContainer(context: Context) {
     private val appContext = context.applicationContext
 
     init {
         VaultManager.init(appContext)
+        MapStorage.migrateFromOldLocations(appContext)   // ← вместо migrateFromInternalStorage
     }
 
     val securePreferences by lazy { SecurePreferences(appContext) }
