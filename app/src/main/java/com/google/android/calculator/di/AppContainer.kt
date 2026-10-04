@@ -28,7 +28,8 @@ class AppContainer(context: Context) {
 
     init {
         VaultManager.init(appContext)
-        MapStorage.migrateFromOldLocations(appContext)   // ← вместо migrateFromInternalStorage
+        OfflineRegions.initialize(appContext)  // ← ДОБАВИТЬ
+        MapStorage.migrateFromOldLocations(appContext)
     }
 
     val securePreferences by lazy { SecurePreferences(appContext) }

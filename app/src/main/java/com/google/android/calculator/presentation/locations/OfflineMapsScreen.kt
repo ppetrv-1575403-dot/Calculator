@@ -76,6 +76,30 @@ fun OfflineMapsScreen(onBack: () -> Unit) {
                     }
                 },
                 actions = {
+                    IconButton(
+                        onClick = {
+                            scope.launch {
+                                val result = OfflineRegions.refreshFromServer()
+                                if (result.isSuccess) {
+                                    // Обновляем список регионов в UI
+                                    // TODO: добавить State для регионов
+                                    android.widget.Toast.makeText(
+                                        context,
+                                        "✅ Список обнов9лён: ${regions.size} регионов",
+                                        android.widget.Toast.LENGTH_SHORT
+                                    ).show()
+                                } else {
+                                    android.widget.Toast.makeText(
+                                        context,
+                                        "❌ Ошибка обновления: ${result.exceptionOrNull()?.message}",
+                                        android.widget.Toast.LENGTH_LONG
+                                    ).show()
+                                }
+                            }
+                        }
+                    ) {
+                        Icon(Icons.Default.Refresh, "Обновить список")
+                    }
                     IconButton(onClick = { showLogsDialog = true }) {
                         Icon(Icons.Default.Description, "Логи")
                     }
