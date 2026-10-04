@@ -52,7 +52,7 @@ jobs:
           KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
         run: ./gradlew assembleRelease --no-daemon
 
-      # Получаем размер файла для определения способа отправки
+      # Получаем размер APK
       - name: Get APK size
         id: apk_size
         run: |
@@ -60,6 +60,24 @@ jobs:
           SIZE_MB=$((SIZE / 1024 / 1024))
           echo "size_mb=$SIZE_MB" >> $GITHUB_OUTPUT
           echo "APK size: ${SIZE_MB} MB"
+
+      # Определяем тег и название релиза
+      - name: Set release info
+        id: release_info
+        run: |
+          if [[ "${{ github.ref }}" == refs/tags/* ]]; then
+            TAG="${{ github.ref_name }}"
+            NAME="Calculator ${{ github.ref_name }}"
+            PRERELEASE="false"
+          else
+            TAG="nightly"
+            NAME="Calculator — nightly build"
+            PRERELEASE="true"
+          fi
+          echo "tag=$TAG" >> $GITHUB_OUTPUT
+          echo "name=$NAME" >> $GITHUB_OUTPUT
+          echo "prerelease=$PRERELEASE" >> $GITHUB_OUTPUT
+          echo "Release: $TAG — $NAME"
 
       - name: Upload Debug APK
         uses: actions/upload-artifact@v4
@@ -75,21 +93,41 @@ jobs:
           path: app/build/outputs/apk/release/*.apk
           retention-days: 30
 
-      # Создаём GitHub Release (для тегов и для веток при ручном запуске)
-      - name: Create GitHub Release
-        if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch'
-        uses: softprops/action-gh-release@v2
+      # Создаём/обновляем GitHub Release
+      - name: Create/Update GitHub Release
+        uses: ncipollo/release-action@v1
         with:
-          name: Calculator ${{ github.ref_name }}
-          files: |
+          tag: ${{ steps.release_info.outputs.tag }}
+          name: ${{ steps.release_info.outputs.name }}
+          artifacts: |
             app/build/outputs/apk/release/*.apk
             app/build/outputs/apk/debug/*.apk
-          draft: false
-          prerelease: false
-          generate_release_notes: true
-          tag_name: ${{ github.event_name == 'workflow_dispatch' && format('nightly-{0}', github.run_number) || github.ref_name }}
+          allowUpdates: true
+          replacesArtifacts: true
+          prerelease: ${{ steps.release_info.outputs.prerelease }}
+          generateReleaseNotes: false
+          body: |
+            ## Calculator — новая сборка
+            
+            **Версия/ветка:** ${{ github.ref_name }}
+            **Автор:** ${{ github.actor }}
+            **Коммит:** ${{ github.sha }}
+            **Размер APK:** ${{ steps.apk_size.outputs.size_mb }} MB
+            
+            Прямая ссылка на APK:
+            ```
+            ${{ github.server_url }}/${{ github.repository }}/releases/download/${{ steps.release_info.outputs.tag }}/app-release.apk
+            ```
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # Формируем прямую ссылку на APK
+      - name: Set APK download URL
+        id: apk_url
+        run: |
+          URL="${{ github.server_url }}/${{ github.repository }}/releases/download/${{ steps.release_info.outputs.tag }}/app-release.apk"
+          echo "url=$URL" >> $GITHUB_OUTPUT
+          echo "APK URL: $URL"
 
       # Отправляем файл напрямую, если размер < 49 МБ
       - name: Send APK to Telegram (small file)
@@ -100,24 +138,30 @@ jobs:
           token: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           document: app/build/outputs/apk/release/app-release.apk
           message: |
-            📱 Calculator — новая сборка готова!
-            Версия/ветка: ${{ github.ref_name }}
-            Автор: ${{ github.actor }}
-            Размер: ${{ steps.apk_size.outputs.size_mb }} MB
+            📱 **Calculator** — новая сборка готова!
+            
+            **Версия/ветка:** ${{ github.ref_name }}
+            **Автор:** ${{ github.actor }}
+            **Размер:** ${{ steps.apk_size.outputs.size_mb }} MB
+            
+            🔗 Прямая ссылка:
+            ${{ steps.apk_url.outputs.url }}
 
-      # Отправляем только ссылку, если файл > 50 МБ
-      - name: Send release link to Telegram (large file)
+      # Отправляем ссылку, если файл > 50 МБ (лимит Telegram Bot API)
+      - name: Send link to Telegram (large file)
         if: success() && steps.apk_size.outputs.size_mb >= 49
         uses: appleboy/telegram-action@master
         with:
           to: ${{ secrets.TELEGRAM_CHAT_ID }}
           token: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           message: |
-            📱 Calculator — новая сборка готова!
+            📱 **Calculator** — новая сборка готова!
             
-            Версия/ветка: ${{ github.ref_name }}
-            Автор: ${{ github.actor }}
-            Размер: ${{ steps.apk_size.outputs.size_mb }} MB
+            **Версия/ветка:** ${{ github.ref_name }}
+            **Автор:** ${{ github.actor }}
+            **Размер:** ${{ steps.apk_size.outputs.size_mb }} MB
             
-            ⚠️ Файл больше 50 МБ — скачивайте по ссылке:
-            ${{ github.server_url }}/${{ github.repository }}/releases
+            ⚠️ Файл больше 50 MB — скачивайте по прямой ссылке:
+            🔗 ${{ steps.apk_url.outputs.url }}
+            
+            Все релизы: ${{ github.server_url }}/${{ github.repository }}/releases
