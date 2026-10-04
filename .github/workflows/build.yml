@@ -6,7 +6,6 @@ on:
     tags: [ 'v*' ]
   workflow_dispatch:
 
-# Разрешаем workflow создавать релизы и писать в репозиторий
 permissions:
   contents: write
 
@@ -16,33 +15,27 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      # 1. Скачиваем код
       - name: Checkout code
         uses: actions/checkout@v4
 
-      # 2. JDK setup
       - name: Setup JDK
         uses: actions/setup-java@v4
         with:
           java-version: '21'
           distribution: 'temurin'
 
-      # 3. Gradle с кэшем
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v3
         with:
           gradle-version: wrapper
 
-      # 4. Права на gradlew
       - name: Grant execute permission for gradlew
         run: chmod +x gradlew
 
-      # 5. Декодируем keystore
       - name: Decode Keystore
         run: |
           echo "${{ secrets.KEYSTORE_BASE64 }}" | base64 -di > release-key.jks
-          
-      # 6. Собираем Debug APK
+
       - name: Build Debug APK
         env:
           KEYSTORE_PATH: ${{ github.workspace }}/release-key.jks
@@ -51,7 +44,6 @@ jobs:
           KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
         run: ./gradlew assembleDebug --no-daemon
 
-      # 7. Собираем подписанный Release APK
       - name: Build Release APK
         env:
           KEYSTORE_PATH: ${{ github.workspace }}/release-key.jks
@@ -60,7 +52,15 @@ jobs:
           KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
         run: ./gradlew assembleRelease --no-daemon
 
-      # 8. Артефакт: Debug
+      # Получаем размер файла для определения способа отправки
+      - name: Get APK size
+        id: apk_size
+        run: |
+          SIZE=$(stat -c%s "app/build/outputs/apk/release/app-release.apk" || stat -f%z "app/build/outputs/apk/release/app-release.apk")
+          SIZE_MB=$((SIZE / 1024 / 1024))
+          echo "size_mb=$SIZE_MB" >> $GITHUB_OUTPUT
+          echo "APK size: ${SIZE_MB} MB"
+
       - name: Upload Debug APK
         uses: actions/upload-artifact@v4
         with:
@@ -68,7 +68,6 @@ jobs:
           path: app/build/outputs/apk/debug/*.apk
           retention-days: 30
 
-      # 9. Артефакт: Release
       - name: Upload Release APK
         uses: actions/upload-artifact@v4
         with:
@@ -76,9 +75,9 @@ jobs:
           path: app/build/outputs/apk/release/*.apk
           retention-days: 30
 
-      # 10. Создаём GitHub Release ТОЛЬКО при пуше тега (v*)
+      # Создаём GitHub Release (для тегов и для веток при ручном запуске)
       - name: Create GitHub Release
-        if: startsWith(github.ref, 'refs/tags/')
+        if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch'
         uses: softprops/action-gh-release@v2
         with:
           name: Calculator ${{ github.ref_name }}
@@ -88,18 +87,37 @@ jobs:
           draft: false
           prerelease: false
           generate_release_notes: true
+          tag_name: ${{ github.event_name == 'workflow_dispatch' && format('nightly-{0}', github.run_number) || github.ref_name }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      # 11. Отправляем Release APK в Telegram
-      - name: Send APK to Telegram
-        if: success()
+      # Отправляем файл напрямую, если размер < 49 МБ
+      - name: Send APK to Telegram (small file)
+        if: success() && steps.apk_size.outputs.size_mb < 49
         uses: appleboy/telegram-action@master
         with:
           to: ${{ secrets.TELEGRAM_CHAT_ID }}
           token: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           document: app/build/outputs/apk/release/app-release.apk
           message: |
-           Calculator — новая сборка готова!
+            📱 Calculator — новая сборка готова!
             Версия/ветка: ${{ github.ref_name }}
             Автор: ${{ github.actor }}
+            Размер: ${{ steps.apk_size.outputs.size_mb }} MB
+
+      # Отправляем только ссылку, если файл > 50 МБ
+      - name: Send release link to Telegram (large file)
+        if: success() && steps.apk_size.outputs.size_mb >= 49
+        uses: appleboy/telegram-action@master
+        with:
+          to: ${{ secrets.TELEGRAM_CHAT_ID }}
+          token: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          message: |
+            📱 Calculator — новая сборка готова!
+            
+            Версия/ветка: ${{ github.ref_name }}
+            Автор: ${{ github.actor }}
+            Размер: ${{ steps.apk_size.outputs.size_mb }} MB
+            
+            ⚠️ Файл больше 50 МБ — скачивайте по ссылке:
+            ${{ github.server_url }}/${{ github.repository }}/releases
