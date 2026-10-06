@@ -20,24 +20,29 @@ import androidx.lifecycle.ProcessLifecycleOwner
 import com.google.android.calculator.di.AppContainer
 import com.google.android.calculator.domain.usecase.ClearCacheUseCase
 import com.google.android.calculator.presentation.theme.VaultTheme
-import com.google.android.calculator.presentation.AppNavigator
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.runBlocking
 import org.maplibre.android.MapLibre
 
 import com.google.android.calculator.R
 import com.google.android.calculator.BuildConfig
+import com.google.android.calculator.presentation.MyApplication
+import com.google.android.calculator.utils.ClipboardManager
+import com.google.android.calculator.utils.FileLogger
 
 class MainActivity : ComponentActivity() {
 
     private lateinit var appContainer: AppContainer
     private lateinit var clearCacheUseCase: ClearCacheUseCase
     private var isVaultOpen = false
+    private var lifecycleObserverRegistered = false
 
     private val screenOffReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
             if (intent?.action == Intent.ACTION_SCREEN_OFF) {
                 Log.d("MainActivity", "Screen OFF received")
+                // При погасании экрана приложение ещё на переднем плане — проверяем буфер
+                ClipboardManager.checkAndClearIfGeoData(this@MainActivity)
                 cleanupAndRemoveFromRecents()
             }
         }
@@ -45,26 +50,23 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
 
-        // 1. Запрет скриншотов и записи экрана (в т.ч. чёрная превьюшка в recents)
-        if(!BuildConfig.DEBUG) {
+        if (!BuildConfig.DEBUG) {
             window.setFlags(
                 android.view.WindowManager.LayoutParams.FLAG_SECURE,
                 android.view.WindowManager.LayoutParams.FLAG_SECURE
             )
         }
-        
-        // 2. Маскировка записи в списке задач (если вдруг приложение мелькнёт в recents)
+
         val name = getString(R.string.app_name)
         setTaskDescription(
             android.app.ActivityManager.TaskDescription(name)
         )
-        
+
         super.onCreate(savedInstanceState)
-        
+
         enableEdgeToEdge()
 
         appContainer = MyApplication.app?.appContainer as AppContainer
-        
         clearCacheUseCase = ClearCacheUseCase(applicationContext)
 
         val filter = IntentFilter(Intent.ACTION_SCREEN_OFF)
@@ -74,9 +76,8 @@ class MainActivity : ComponentActivity() {
             registerReceiver(screenOffReceiver, filter)
         }
 
-        // Инициализация MapLibre
         MapLibre.getInstance(this)
-    
+
         setContent {
             VaultTheme {
                 Surface(
@@ -91,6 +92,16 @@ class MainActivity : ComponentActivity() {
         observeAppLifecycle()
     }
 
+    /**
+     * ВАЖНО: onPause() Activity вызывается ПОКА приложение ещё на переднем плане.
+     * Это единственное место, где можно прочитать буфер обмена в новых версиях Android.
+     */
+    override fun onPause() {
+        super.onPause()
+        FileLogger.d("MainActivity", "Activity.onPause — проверяем буфер обмена")
+        ClipboardManager.checkAndClearIfGeoData(this)
+    }
+
     override fun onDestroy() {
         super.onDestroy()
         try {
@@ -99,15 +110,20 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun observeAppLifecycle() {
+        if (lifecycleObserverRegistered) return
+        lifecycleObserverRegistered = true
+
         val observer = object : DefaultLifecycleObserver {
+            override fun onPause(owner: LifecycleOwner) {
+                FileLogger.d("MainActivity", "ProcessLifecycle onPause, isVaultOpen=$isVaultOpen")
+            }
+
             override fun onStop(owner: LifecycleOwner) {
-                Log.d("MainActivity", "onStop called, isVaultOpen=$isVaultOpen")
-                // ВСЕГДА удаляем из recents при сворачивании,
-                // если не идёт файловая операция
+                FileLogger.d("MainActivity", "ProcessLifecycle onStop, isVaultOpen=$isVaultOpen")
                 cleanupAndRemoveFromRecents()
             }
         }
-        
+
         ProcessLifecycleOwner.get().lifecycle.addObserver(observer)
     }
 
@@ -121,20 +137,12 @@ class MainActivity : ComponentActivity() {
         isVaultOpen = false
     }
 
-    /**
-     * Единая функция очистки: удаляет кэш если хранилище было открыто,
-     * и ВСЕГДА убирает приложение из списка недавних.
-     */
     private fun cleanupAndRemoveFromRecents() {
-        // Если файловая операция в процессе — не трогаем приложение
         if (appContainer.isFileOperationInProgress.value) {
             Log.d("MainActivity", "File operation in progress, keeping app alive")
             return
         }
 
-        // Если хранилище было открыто — очищаем кэш СИНХРОННО, до finishAndRemoveTask().
-        // Раньше очистка запускалась асинхронной корутиной и ничего не гарантировала —
-        // приложение могло уйти в фон/процесс завершиться раньше, чем она успевала отработать.
         if (isVaultOpen) {
             Log.d("MainActivity", "Vault was open, clearing cache")
             runBlocking(Dispatchers.IO) {

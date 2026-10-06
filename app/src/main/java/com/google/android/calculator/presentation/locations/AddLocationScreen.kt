@@ -21,15 +21,19 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import androidx.core.content.FileProvider
 import com.google.android.calculator.di.AppContainer
 import com.google.android.calculator.domain.model.SavedLocation
 import com.google.android.calculator.domain.model.VaultFile
+import com.google.android.calculator.utils.ClipboardManager
 import kotlinx.coroutines.launch
 import java.io.File
+import java.util.regex.Pattern
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -41,10 +45,14 @@ fun AddLocationScreen(
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
+    val clipboardManager = LocalClipboardManager.current
+    
     var name by remember { mutableStateOf("") }
     var description by remember { mutableStateOf("") }
-    var latText by remember { mutableStateOf("") }
-    var lngText by remember { mutableStateOf("") }
+    var coordinatesText by remember { mutableStateOf("") }
+    var parsedLat by remember { mutableStateOf<Double?>(null) }
+    var parsedLng by remember { mutableStateOf<Double?>(null) }
+    var parseError by remember { mutableStateOf<String?>(null) }
     var attachedPhotoId by remember { mutableStateOf<String?>(null) }
     var attachedPhotoName by remember { mutableStateOf<String?>(null) }
     var showPhotoPicker by remember { mutableStateOf(false) }
@@ -81,14 +89,67 @@ fun AddLocationScreen(
         }
     }
 
+    // Парсер координат
+    fun parseCoordinates(text: String): Pair<Double, Double>? {
+        if (text.isBlank()) return null
+        
+        val cleaned = text.trim()
+        
+        // Паттерны для парсинга
+        val patterns = listOf(
+            // "52.123456, 23.654321" или "52.123456 23.654321"
+            Pattern.compile("(-?\\d+\\.?\\d*)\\s*[,\\s]\\s*(-?\\d+\\.?\\d*)"),
+            // "N52.123456, E23.654321"
+            Pattern.compile("[NS]?(-?\\d+\\.?\\d*)[,\\s]+[EW]?(-?\\d+\\.?\\d*)"),
+            // Geo URI: "geo:52.123456,23.654321"
+            Pattern.compile("geo:(-?\\d+\\.?\\d*),(-?\\d+\\.?\\d*)")
+        )
+        
+        for (pattern in patterns) {
+            val matcher = pattern.matcher(cleaned)
+            if (matcher.find()) {
+                try {
+                    val lat = matcher.group(1)?.toDoubleOrNull()
+                    val lng = matcher.group(2)?.toDoubleOrNull()
+                    if (lat != null && lng != null) {
+                        return Pair(lat, lng)
+                    }
+                } catch (e: Exception) {
+                    // Продолжаем пробовать следующий паттерн
+                }
+            }
+        }
+        
+        return null
+    }
+
+    // Автоматический парсинг при изменении текста
+    LaunchedEffect(coordinatesText) {
+        if (coordinatesText.isBlank()) {
+            parsedLat = null
+            parsedLng = null
+            parseError = null
+        } else {
+            val result = parseCoordinates(coordinatesText)
+            if (result != null) {
+                parsedLat = result.first
+                parsedLng = result.second
+                parseError = null
+            } else {
+                parsedLat = null
+                parsedLng = null
+                parseError = "Не удалось распознать координаты"
+            }
+        }
+    }
+
     LaunchedEffect(editLocationId) {
         if (editLocationId != null) {
             val loc = appContainer.locationRepository.getLocationById(editLocationId)
             if (loc != null) {
                 name = loc.name
                 description = loc.description
-                latText = loc.latitude.toString()
-                lngText = loc.longitude.toString()
+                coordinatesText = "${loc.latitude}, ${loc.longitude}"
                 attachedPhotoId = loc.photoId
                 attachedPhotoName = if (loc.photoId != null) "Прикреплённое фото" else null
             }
@@ -104,8 +165,9 @@ fun AddLocationScreen(
         isLocating = true
         val listener = object : LocationListener {
             override fun onLocationChanged(l: Location) {
-                latText = l.latitude.toString(); lngText = l.longitude.toString()
-                isLocating = false; lm.removeUpdates(this)
+                coordinatesText = "${l.latitude}, ${l.longitude}"
+                isLocating = false
+                lm.removeUpdates(this)
             }
             @Deprecated("Deprecated in Java")
             override fun onStatusChanged(p: String?, s: Int, b: Bundle?) {}
@@ -116,21 +178,45 @@ fun AddLocationScreen(
             val lastLoc = lm.getLastKnownLocation(LocationManager.GPS_PROVIDER)
                 ?: lm.getLastKnownLocation(LocationManager.NETWORK_PROVIDER)
             if (lastLoc != null) {
-                latText = lastLoc.latitude.toString()
-                lngText = lastLoc.longitude.toString()
+                coordinatesText = "${lastLoc.latitude}, ${lastLoc.longitude}"
             }
             lm.requestLocationUpdates(LocationManager.GPS_PROVIDER, 0, 0f, listener)
             lm.requestLocationUpdates(LocationManager.NETWORK_PROVIDER, 0, 0f, listener)
-        } catch (e: Exception) { isLocating = false }
+        } catch (e: Exception) {
+            isLocating = false
+        }
     }
 
+    fun pasteFromClipboard() {
+        val text = clipboardManager.getText()?.text
+        if (!text.isNullOrBlank()) {
+            coordinatesText = text
+        }
+    }
+
+    fun copyCoordinates() {
+        if (parsedLat != null && parsedLng != null) {
+            val text = "$parsedLat, $parsedLng"
+            val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
+            clipboard.setPrimaryClip(android.content.ClipData.newPlainText("Координаты", text))
+            message = "Координаты скопированы"
+        }
+    }
+    
     fun save() {
-        val lat = latText.toDoubleOrNull(); val lng = lngText.toDoubleOrNull()
-        if (name.isBlank() || lat == null || lng == null) { message = "Заполните название и координаты"; return }
+        if (name.isBlank()) {
+            message = "Заполните название"
+            return
+        }
+        if (parsedLat == null || parsedLng == null) {
+            message = "Введите корректные координаты"
+            return
+        }
+        
         scope.launch {
             val location = SavedLocation(
                 editLocationId ?: System.currentTimeMillis().toString(),
-                name, description, lat, lng, attachedPhotoId, folderId
+                name, description, parsedLat!!, parsedLng!!, attachedPhotoId, folderId
             )
             if (editLocationId != null) {
                 appContainer.locationRepository.updateLocation(location)
@@ -155,43 +241,158 @@ fun AddLocationScreen(
             )
         }
     ) { padding ->
-        Column(Modifier.fillMaxSize().padding(padding).padding(16.dp).verticalScroll(rememberScrollState()),
-            verticalArrangement = Arrangement.spacedBy(12.dp)) {
-            OutlinedTextField(name, { name = it }, label = { Text("Название") }, modifier = Modifier.fillMaxWidth())
-            OutlinedTextField(description, { description = it }, label = { Text("Описание") }, modifier = Modifier.fillMaxWidth(), minLines = 2)
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                OutlinedTextField(latText, { latText = it }, label = { Text("Широта") }, modifier = Modifier.weight(1f))
-                OutlinedTextField(lngText, { lngText = it }, label = { Text("Долгота") }, modifier = Modifier.weight(1f))
+        Column(
+            Modifier
+                .fillMaxSize()
+                .padding(padding)
+                .padding(16.dp)
+                .verticalScroll(rememberScrollState()),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            OutlinedTextField(
+                name,
+                { name = it },
+                label = { Text("Название") },
+                modifier = Modifier.fillMaxWidth()
+            )
+            
+            OutlinedTextField(
+                description,
+                { description = it },
+                label = { Text("Описание") },
+                modifier = Modifier.fillMaxWidth(),
+                minLines = 2
+            )
+            
+            // Поле координат с кнопками
+            OutlinedTextField(
+                coordinatesText,
+                { coordinatesText = it },
+                label = { Text("Координаты (широта, долгота)") },
+                placeholder = { Text("52.123456, 23.654321") },
+                modifier = Modifier.fillMaxWidth(),
+                minLines = 2,
+                trailingIcon = {
+                    if (parsedLat != null && parsedLng != null) {
+                        IconButton(onClick = { copyCoordinates() }) {
+                            Icon(Icons.Default.ContentCopy, "Копировать координаты")
+                        }
+                    }
+                }
+            )
+            
+            // Отображение распарсенных координат
+            if (parsedLat != null && parsedLng != null) {
+                Surface(
+                    tonalElevation = 2.dp,
+                    shape = MaterialTheme.shapes.small,
+                    color = MaterialTheme.colorScheme.primaryContainer
+                ) {
+                    Row(
+                        Modifier.padding(12.dp).fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Column {
+                            Text("Широта", style = MaterialTheme.typography.labelSmall)
+                            Text(
+                                "%.6f".format(parsedLat),
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onPrimaryContainer
+                            )
+                        }
+                        Column(horizontalAlignment = Alignment.End) {
+                            Text("Долгота", style = MaterialTheme.typography.labelSmall)
+                            Text(
+                                "%.6f".format(parsedLng),
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onPrimaryContainer
+                            )
+                        }
+                    }
+                }
+            } else if (parseError != null && coordinatesText.isNotBlank()) {
+                Text(
+                    parseError!!,
+                    color = MaterialTheme.colorScheme.error,
+                    style = MaterialTheme.typography.bodySmall
+                )
             }
-            Button(onClick = { fetchLocation() }, modifier = Modifier.fillMaxWidth(), enabled = !isLocating) {
+            
+            // Кнопки действий
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedButton(
+                    onClick = { pasteFromClipboard() },
+                    modifier = Modifier.weight(1f)
+                ) {
+                    Icon(Icons.Default.ContentPaste, null, Modifier.size(20.dp))
+                    Spacer(Modifier.width(8.dp))
+                    Text("Вставить")
+                }
+                OutlinedButton(
+                    onClick = { coordinatesText = "" },
+                    modifier = Modifier.weight(1f)
+                ) {
+                    Icon(Icons.Default.Clear, null, Modifier.size(20.dp))
+                    Spacer(Modifier.width(8.dp))
+                    Text("Очистить")
+                }
+            }
+            
+            Button(
+                onClick = { fetchLocation() },
+                modifier = Modifier.fillMaxWidth(),
+                enabled = !isLocating
+            ) {
                 Icon(Icons.Default.MyLocation, null, Modifier.size(20.dp))
                 Spacer(Modifier.width(8.dp))
                 Text(if (isLocating) "Определение..." else "Определить текущие координаты")
             }
+            
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                OutlinedButton(onClick = { showPhotoPicker = true }, modifier = Modifier.weight(1f)) {
-                    Icon(Icons.Default.Image, null, Modifier.size(20.dp)); Spacer(Modifier.width(8.dp)); Text("Фото из хранилища")
+                OutlinedButton(
+                    onClick = { showPhotoPicker = true },
+                    modifier = Modifier.weight(1f)
+                ) {
+                    Icon(Icons.Default.Image, null, Modifier.size(20.dp))
+                    Spacer(Modifier.width(8.dp))
+                    Text("Фото из хранилища")
                 }
-                OutlinedButton(onClick = {
-                    if (hasCameraPermission) launchCamera(cameraFile, cameraLauncher, context)
-                    else { pendingTakePhoto = true; cameraPermissionLauncher.launch(Manifest.permission.CAMERA) }
-                }, modifier = Modifier.weight(1f)) {
-                    Icon(Icons.Default.PhotoCamera, null, Modifier.size(20.dp)); Spacer(Modifier.width(8.dp)); Text("Сделать фото")
+                OutlinedButton(
+                    onClick = {
+                        if (hasCameraPermission) launchCamera(cameraFile, cameraLauncher, context)
+                        else {
+                            pendingTakePhoto = true
+                            cameraPermissionLauncher.launch(Manifest.permission.CAMERA)
+                        }
+                    },
+                    modifier = Modifier.weight(1f)
+                ) {
+                    Icon(Icons.Default.PhotoCamera, null, Modifier.size(20.dp))
+                    Spacer(Modifier.width(8.dp))
+                    Text("Сделать фото")
                 }
             }
+            
             attachedPhotoName?.let {
                 Surface(tonalElevation = 2.dp, shape = MaterialTheme.shapes.small) {
                     Row(Modifier.padding(8.dp), verticalAlignment = Alignment.CenterVertically) {
                         Icon(Icons.Default.AttachFile, null, Modifier.size(16.dp))
                         Spacer(Modifier.width(8.dp))
                         Text(it, style = MaterialTheme.typography.bodySmall, modifier = Modifier.weight(1f))
-                        IconButton(onClick = { attachedPhotoId = null; attachedPhotoName = null }, modifier = Modifier.size(24.dp)) {
+                        IconButton(
+                            onClick = { attachedPhotoId = null; attachedPhotoName = null },
+                            modifier = Modifier.size(24.dp)
+                        ) {
                             Icon(Icons.Default.Close, "Убрать", Modifier.size(16.dp))
                         }
                     }
                 }
             }
-            message?.let { Text(it, color = MaterialTheme.colorScheme.error) }
+            
+            message?.let {
+                Text(it, color = MaterialTheme.colorScheme.error)
+            }
+            
             Button(onClick = { save() }, modifier = Modifier.fillMaxWidth()) {
                 Text(if (editLocationId != null) "Сохранить изменения" else "Сохранить точку")
             }
@@ -206,7 +407,11 @@ fun AddLocationScreen(
                 if (vaultImages.isEmpty()) Text("В хранилище нет изображений")
                 else LazyColumn(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                     items(vaultImages) { img ->
-                        TextButton(onClick = { attachedPhotoId = img.id; attachedPhotoName = img.originalName; showPhotoPicker = false }) {
+                        TextButton(onClick = {
+                            attachedPhotoId = img.id
+                            attachedPhotoName = img.originalName
+                            showPhotoPicker = false
+                        }) {
                             Text(img.originalName)
                         }
                     }
