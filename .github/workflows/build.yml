@@ -52,33 +52,6 @@ jobs:
           KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
         run: ./gradlew assembleRelease --no-daemon
 
-      # Получаем размер APK
-      - name: Get APK size
-        id: apk_size
-        run: |
-          SIZE=$(stat -c%s "app/build/outputs/apk/release/app-release.apk" || stat -f%z "app/build/outputs/apk/release/app-release.apk")
-          SIZE_MB=$((SIZE / 1024 / 1024))
-          echo "size_mb=$SIZE_MB" >> $GITHUB_OUTPUT
-          echo "APK size: ${SIZE_MB} MB"
-
-      # Определяем тег и название релиза
-      - name: Set release info
-        id: release_info
-        run: |
-          if [[ "${{ github.ref }}" == refs/tags/* ]]; then
-            TAG="${{ github.ref_name }}"
-            NAME="Calculator ${{ github.ref_name }}"
-            PRERELEASE="false"
-          else
-            TAG="nightly"
-            NAME="Calculator — nightly build"
-            PRERELEASE="true"
-          fi
-          echo "tag=$TAG" >> $GITHUB_OUTPUT
-          echo "name=$NAME" >> $GITHUB_OUTPUT
-          echo "prerelease=$PRERELEASE" >> $GITHUB_OUTPUT
-          echo "Release: $TAG — $NAME"
-
       - name: Upload Debug APK
         uses: actions/upload-artifact@v4
         with:
@@ -93,96 +66,49 @@ jobs:
           path: app/build/outputs/apk/release/*.apk
           retention-days: 30
 
-      # Создаём/обновляем GitHub Release
-      - name: Create/Update GitHub Release
-        uses: ncipollo/release-action@v1
+      - name: Create GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
         with:
-          tag: ${{ steps.release_info.outputs.tag }}
-          name: ${{ steps.release_info.outputs.name }}
-          artifacts: |
+          name: Calculator ${{ github.ref_name }}
+          files: |
             app/build/outputs/apk/release/*.apk
             app/build/outputs/apk/debug/*.apk
-          allowUpdates: true
-          replacesArtifacts: true
-          prerelease: ${{ steps.release_info.outputs.prerelease }}
-          generateReleaseNotes: false
-          body: |
-            ## Calculator — новая сборка
-            
-            **Версия/ветка:** ${{ github.ref_name }}
-            **Автор:** ${{ github.actor }}
-            **Коммит:** ${{ github.sha }}
-            **Размер APK:** ${{ steps.apk_size.outputs.size_mb }} MB
-            
-            Прямая ссылка на APK:
-            ```
-            ${{ github.server_url }}/${{ github.repository }}/releases/download/${{ steps.release_info.outputs.tag }}/app-release.apk
-            ```
+          draft: false
+          prerelease: false
+          generate_release_notes: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      # Формируем прямую ссылку на APK
-      - name: Set APK download URL
-        id: apk_url
+      - name: Upload APK to catbox.moe
+        id: upload_catbox
         run: |
-          URL="${{ github.server_url }}/${{ github.repository }}/releases/download/${{ steps.release_info.outputs.tag }}/app-release.apk"
-          echo "url=$URL" >> $GITHUB_OUTPUT
-          echo "APK URL: $URL"
+          echo "📦 Загружаем APK на catbox.moe..."
+          URL=$(curl -s -F "reqtype=fileupload" -F "fileToUpload=@app/build/outputs/apk/release/app-release.apk" https://catbox.moe/user/api.php)
+          
+          if [[ "$URL" == *"https://files.catbox.moe/"* ]]; then
+            echo "✅ APK загружен: $URL"
+            echo "download_url=$URL" >> $GITHUB_OUTPUT
+          else
+            echo "❌ Ошибка загрузки: $URL"
+            exit 1
+          fi
 
-      # Отправляем файл напрямую, если размер < 49 МБ
-      - name: Send APK to Telegram (small file)
-        if: success() && steps.apk_size.outputs.size_mb < 49
-        uses: appleboy/telegram-action@master
-        with:
-          to: ${{ secrets.TELEGRAM_CHAT_ID }}
-          token: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          document: app/build/outputs/apk/release/app-release.apk
-          message: |
-            📱 **Calculator** — новая сборка готова!
-            
-            **Версия/ветка:** ${{ github.ref_name }}
-            **Автор:** ${{ github.actor }}
-            **Размер:** ${{ steps.apk_size.outputs.size_mb }} MB
-            
-            🔗 Прямая ссылка:
-            ${{ steps.apk_url.outputs.url }}
-
-      # Отправляем ссылку, если файл > 50 МБ (лимит Telegram Bot API)
-      - name: Send link to Telegram (large file)
-        if: success() && steps.apk_size.outputs.size_mb >= 49
+      - name: Send download link to Telegram
+        if: success()
         uses: appleboy/telegram-action@master
         with:
           to: ${{ secrets.TELEGRAM_CHAT_ID }}
           token: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           message: |
-            📱 **Calculator** — новая сборка готова!
+            🚀 **Calculator** — новая сборка готова!
             
             **Версия/ветка:** ${{ github.ref_name }}
             **Автор:** ${{ github.actor }}
-            **Размер:** ${{ steps.apk_size.outputs.size_mb }} MB
+            **Коммит:** `${{ github.sha }}`
             
-            ⚠️ Файл больше 50 MB — скачивайте по прямой ссылке:
-            🔗 ${{ steps.apk_url.outputs.url }}
+            📥 **Скачать APK:**
+            ${{ steps.upload_catbox.outputs.download_url }}
             
-            Все релизы: ${{ github.server_url }}/${{ github.repository }}/releases
-
-       - name: Deploy to GitHub Pages
-         uses: peaceiris/actions-gh-pages@v3
-         with:
-            github_token: ${{ secrets.GITHUB_TOKEN }}
-            publish_dir: ./app/build/outputs/apk/release
-            publish_branch: gh-pages
-            keep_files: true
-
-       - name: Send to Telegram
-         uses: appleboy/telegram-action@master
-         with:
-            to: ${{ secrets.TELEGRAM_CHAT_ID }}
-            token: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-            message: |
-              🚀 Новая сборка готова!
-
-              Коммит: ${{ github.sha }}
-              Сообщение: ${{ github.event.head_commit.message }}
-
-              📥 Скачать: https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}/app-release.apk
+            🔗 Ссылка постоянная (catbox.moe)
+            📂 Все релизы: ${{ github.server_url }}/${{ github.repository }}/releases
