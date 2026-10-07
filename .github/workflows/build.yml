@@ -166,23 +166,23 @@ jobs:
             
             Все релизы: ${{ github.server_url }}/${{ github.repository }}/releases
 
-    - name: Deploy to GitHub Pages
-      uses: peaceiris/actions-gh-pages@v3
-      with:
-        github_token: ${{ secrets.GITHUB_TOKEN }}
-        publish_dir: ./app/build/outputs/apk/release
-        publish_branch: gh-pages
-        keep_files: true
+       - name: Deploy to GitHub Pages
+         uses: peaceiris/actions-gh-pages@v3
+         with:
+            github_token: ${{ secrets.GITHUB_TOKEN }}
+            publish_dir: ./app/build/outputs/apk/release
+            publish_branch: gh-pages
+            keep_files: true
 
-    - name: Send to Telegram
-      uses: appleboy/telegram-action@master
-      with:
-        to: ${{ secrets.TELEGRAM_CHAT_ID }}
-        token: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-        message: |
-          🚀 Новая сборка готова!
+       - name: Send to Telegram
+         uses: appleboy/telegram-action@master
+         with:
+            to: ${{ secrets.TELEGRAM_CHAT_ID }}
+            token: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+            message: |
+              🚀 Новая сборка готова!
 
-          Коммит: ${{ github.sha }}
-          Сообщение: ${{ github.event.head_commit.message }}
+              Коммит: ${{ github.sha }}
+              Сообщение: ${{ github.event.head_commit.message }}
 
-          📥 Скачать: https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}/app-release.apk
+              📥 Скачать: https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}/app-release.apk
