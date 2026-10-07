@@ -51,88 +51,25 @@ jobs:
           path: app/build/outputs/apk/release/*.apk
           retention-days: 30
 
-      - name: Upload APK to hosting
-        id: upload_apk
+      - name: Create Pre-release
+        id: create_release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: Dev Build ${{ github.run_number }}
+          tag_name: dev-${{ github.run_number }}
+          prerelease: true
+          files: app/build/outputs/apk/release/*.apk
+          generate_release_notes: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Get APK URL
+        id: get_url
         run: |
-          APK_PATH="app/build/outputs/apk/release/app-release.apk"
-          
-          if [[ ! -f "$APK_PATH" ]]; then
-            echo "❌ Файл не найден: $APK_PATH"
-            exit 1
-          fi
-          
-          SIZE=$(du -h "$APK_PATH" | cut -f1)
-          echo "📦 Размер APK: $SIZE"
-          
-          # Вариант 1: file.io
-          echo ""
-          echo "=== Пробуем file.io ==="
-          RESPONSE=$(curl -s -w "\n%{http_code}" -F "file=@$APK_PATH" https://file.io)
-          HTTP_CODE=$(echo "$RESPONSE" | tail -n1)
-          BODY=$(echo "$RESPONSE" | head -n-1)
-          echo "HTTP: $HTTP_CODE"
-          echo "Ответ: $BODY"
-          
-          if [[ "$HTTP_CODE" == "200" ]]; then
-            URL=$(echo "$BODY" | grep -o '"link":"[^"]*"' | cut -d'"' -f4)
-            if [[ -n "$URL" ]]; then
-              echo "✅ Успех: $URL"
-              echo "download_url=$URL" >> $GITHUB_OUTPUT
-              exit 0
-            fi
-          fi
-          
-          # Вариант 2: bashupload.com
-          echo ""
-          echo "=== Пробуем bashupload.com ==="
-          URL=$(curl -s -T "$APK_PATH" https://bashupload.com/app-release.apk)
-          echo "Ответ: $URL"
-          
-          if [[ "$URL" == http* ]]; then
-            # bashupload возвращает текст с ссылкой, извлекаем её
-            LINK=$(echo "$URL" | grep -o 'https://bashupload.com/[a-zA-Z0-9]*' | head -1)
-            if [[ -n "$LINK" ]]; then
-              echo "✅ Успех: $LINK"
-              echo "download_url=$LINK" >> $GITHUB_OUTPUT
-              exit 0
-            fi
-          fi
-          
-          # Вариант 3: litterbox.catbox.moe (временный)
-          echo ""
-          echo "=== Пробуем litterbox.catbox.moe ==="
-          URL=$(curl -s \
-            -F "reqtype=fileupload" \
-            -F "time=72h" \
-            -F "fileToUpload=@$APK_PATH" \
-            https://litterbox.catbox.moe/resources/internals/api.php)
-          echo "Ответ: $URL"
-          
-          if [[ "$URL" == *"https://litter.catbox.moe/"* ]]; then
-            echo "✅ Успех: $URL"
-            echo "download_url=$URL" >> $GITHUB_OUTPUT
-            exit 0
-          fi
-          
-          # Вариант 4: catbox.moe с userhash
-          echo ""
-          echo "=== Пробуем catbox.moe с userhash ==="
-          URL=$(curl -s \
-            -F "reqtype=fileupload" \
-            -F "userhash=" \
-            -F "fileToUpload=@$APK_PATH" \
-            https://catbox.moe/user/api.php)
-          echo "Ответ: $URL"
-          
-          if [[ "$URL" == *"https://files.catbox.moe/"* ]]; then
-            echo "✅ Успех: $URL"
-            echo "download_url=$URL" >> $GITHUB_OUTPUT
-            exit 0
-          fi
-          
-          echo ""
-          echo "❌ Все сервисы не сработали"
-          exit 1
+          APK_NAME=$(ls app/build/outputs/apk/release/*.apk | xargs -n 1 basename)
+          URL="${{ github.server_url }}/${{ github.repository }}/releases/download/dev-${{ github.run_number }}/${APK_NAME}"
+          echo "download_url=$URL" >> $GITHUB_OUTPUT
+          echo "📥 URL: $URL"
 
       - name: Send download link to Telegram
         if: success()
@@ -148,6 +85,7 @@ jobs:
             **Коммит:** `${{ github.sha }}`
             
             📥 **Скачать APK:**
-            ${{ steps.upload_apk.outputs.download_url }}
+            ${{ steps.get_url.outputs.download_url }}
             
-            ⏰ Ссылка временная — скачай скорее!
+            🔗 Прямая ссылка (GitHub Releases)
+            📂 Все релизы: ${{ github.server_url }}/${{ github.repository }}/releases
