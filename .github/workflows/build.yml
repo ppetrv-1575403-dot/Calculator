@@ -51,60 +51,87 @@ jobs:
           path: app/build/outputs/apk/release/*.apk
           retention-days: 30
 
-      - name: Create GitHub Release
-        if: startsWith(github.ref, 'refs/tags/')
-        uses: softprops/action-gh-release@v2
-        with:
-          name: Calculator ${{ github.ref_name }}
-          files: app/build/outputs/apk/release/*.apk
-          draft: false
-          prerelease: false
-          generate_release_notes: true
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
       - name: Upload APK to hosting
         id: upload_apk
         run: |
           APK_PATH="app/build/outputs/apk/release/app-release.apk"
           
-          # Проверяем существование файла
           if [[ ! -f "$APK_PATH" ]]; then
             echo "❌ Файл не найден: $APK_PATH"
-            ls -la app/build/outputs/apk/release/ || echo "Папка не найдена"
             exit 1
           fi
           
-          # Выводим размер файла
           SIZE=$(du -h "$APK_PATH" | cut -f1)
           echo "📦 Размер APK: $SIZE"
           
-          # Пробуем загрузить на 0x0.st (более надёжный)
-          echo "🚀 Загружаем на 0x0.st..."
-          URL=$(curl -s -F "file=@$APK_PATH" https://0x0.st)
+          # Вариант 1: file.io
+          echo ""
+          echo "=== Пробуем file.io ==="
+          RESPONSE=$(curl -s -w "\n%{http_code}" -F "file=@$APK_PATH" https://file.io)
+          HTTP_CODE=$(echo "$RESPONSE" | tail -n1)
+          BODY=$(echo "$RESPONSE" | head -n-1)
+          echo "HTTP: $HTTP_CODE"
+          echo "Ответ: $BODY"
+          
+          if [[ "$HTTP_CODE" == "200" ]]; then
+            URL=$(echo "$BODY" | grep -o '"link":"[^"]*"' | cut -d'"' -f4)
+            if [[ -n "$URL" ]]; then
+              echo "✅ Успех: $URL"
+              echo "download_url=$URL" >> $GITHUB_OUTPUT
+              exit 0
+            fi
+          fi
+          
+          # Вариант 2: bashupload.com
+          echo ""
+          echo "=== Пробуем bashupload.com ==="
+          URL=$(curl -s -T "$APK_PATH" https://bashupload.com/app-release.apk)
+          echo "Ответ: $URL"
           
           if [[ "$URL" == http* ]]; then
-            echo "✅ APK загружен: $URL"
+            # bashupload возвращает текст с ссылкой, извлекаем её
+            LINK=$(echo "$URL" | grep -o 'https://bashupload.com/[a-zA-Z0-9]*' | head -1)
+            if [[ -n "$LINK" ]]; then
+              echo "✅ Успех: $LINK"
+              echo "download_url=$LINK" >> $GITHUB_OUTPUT
+              exit 0
+            fi
+          fi
+          
+          # Вариант 3: litterbox.catbox.moe (временный)
+          echo ""
+          echo "=== Пробуем litterbox.catbox.moe ==="
+          URL=$(curl -s \
+            -F "reqtype=fileupload" \
+            -F "time=72h" \
+            -F "fileToUpload=@$APK_PATH" \
+            https://litterbox.catbox.moe/resources/internals/api.php)
+          echo "Ответ: $URL"
+          
+          if [[ "$URL" == *"https://litter.catbox.moe/"* ]]; then
+            echo "✅ Успех: $URL"
             echo "download_url=$URL" >> $GITHUB_OUTPUT
             exit 0
           fi
           
-          echo "⚠️ 0x0.st не сработал, пробуем catbox.moe..."
-          
-          # Запасной вариант: catbox.moe с User-Agent
+          # Вариант 4: catbox.moe с userhash
+          echo ""
+          echo "=== Пробуем catbox.moe с userhash ==="
           URL=$(curl -s \
-            -A "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36" \
             -F "reqtype=fileupload" \
+            -F "userhash=" \
             -F "fileToUpload=@$APK_PATH" \
             https://catbox.moe/user/api.php)
+          echo "Ответ: $URL"
           
           if [[ "$URL" == *"https://files.catbox.moe/"* ]]; then
-            echo "✅ APK загружен: $URL"
+            echo "✅ Успех: $URL"
             echo "download_url=$URL" >> $GITHUB_OUTPUT
             exit 0
           fi
           
-          echo "❌ Ошибка загрузки. Ответ: $URL"
+          echo ""
+          echo "❌ Все сервисы не сработали"
           exit 1
 
       - name: Send download link to Telegram
@@ -123,4 +150,4 @@ jobs:
             📥 **Скачать APK:**
             ${{ steps.upload_apk.outputs.download_url }}
             
-            ⏰ Ссылка активна ограниченное время — скачай скорее!
+            ⏰ Ссылка временная — скачай скорее!
