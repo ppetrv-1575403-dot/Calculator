@@ -33,8 +33,14 @@ fun OfflineMapsScreen(onBack: () -> Unit) {
     var regionToDownload by remember { mutableStateOf<OfflineRegion?>(null) }
     var regionToDelete by remember { mutableStateOf<DownloadedRegionInfo?>(null) }
     var showLogsDialog by remember { mutableStateOf(false) }
+    var isRefreshingRegions by remember { mutableStateOf(false) }
 
-    val regions = remember { OfflineRegions.getRegions() }
+    // ⭐ Реактивный список регионов: Compose перерисует при любом изменении
+    val regions = remember {
+        mutableStateListOf<OfflineRegion>().apply {
+            addAll(OfflineRegions.getRegions())
+        }
+    }
 
     val downloaded = remember { mutableStateListOf<DownloadedRegionInfo>() }
 
@@ -52,6 +58,7 @@ fun OfflineMapsScreen(onBack: () -> Unit) {
         refreshDownloaded()
     }
 
+    // ⭐ Автообновление списка при COMPLETED / ERROR
     val allStatuses = regions.map { region ->
         MapDownloadManager.getState(region.id).collectAsState().value.status
     }
@@ -75,27 +82,47 @@ fun OfflineMapsScreen(onBack: () -> Unit) {
                     }
                 },
                 actions = {
+                    // ⭐ Кнопка обновления списка регионов с сервера
                     IconButton(
                         onClick = {
+                            if (isRefreshingRegions) return@IconButton
+                            isRefreshingRegions = true
                             scope.launch {
                                 val result = OfflineRegions.refreshFromServer()
                                 if (result.isSuccess) {
+                                    val updatedRegions = result.getOrNull() ?: emptyList()
+                                    // Обновляем реактивный список — UI перерисуется мгновенно
+                                    regions.clear()
+                                    regions.addAll(updatedRegions)
+
                                     android.widget.Toast.makeText(
                                         context,
-                                        "✅ Список обновлён: ${regions.size} регионов",
+                                        "✅ Список обновлён: ${updatedRegions.size} регионов",
                                         android.widget.Toast.LENGTH_SHORT
                                     ).show()
+                                    FileLogger.i("OfflineMapsScreen", "Regions refreshed: ${updatedRegions.size}")
                                 } else {
+                                    val err = result.exceptionOrNull()
                                     android.widget.Toast.makeText(
                                         context,
-                                        "❌ Ошибка обновления: ${result.exceptionOrNull()?.message}",
+                                        "❌ Ошибка обновления: ${err?.message ?: "неизвестно"}",
                                         android.widget.Toast.LENGTH_LONG
                                     ).show()
+                                    FileLogger.e("OfflineMapsScreen", "Refresh failed", err ?: Exception())
                                 }
+                                isRefreshingRegions = false
                             }
-                        }
+                        },
+                        enabled = !isRefreshingRegions
                     ) {
-                        Icon(Icons.Default.Refresh, "Обновить список")
+                        if (isRefreshingRegions) {
+                            CircularProgressIndicator(
+                                Modifier.size(20.dp),
+                                strokeWidth = 2.dp
+                            )
+                        } else {
+                            Icon(Icons.Default.Refresh, "Обновить список регионов")
+                        }
                     }
                     IconButton(onClick = { showLogsDialog = true }) {
                         Icon(Icons.Default.Description, "Логи")
@@ -105,39 +132,32 @@ fun OfflineMapsScreen(onBack: () -> Unit) {
         }
     ) { padding ->
         LazyColumn(
-            Modifier
-                .fillMaxSize()
-                //.statusBarsPadding()
-                .navigationBarsPadding()
-                .padding(padding)
-                .padding(16.dp),
+            Modifier.fillMaxSize().padding(padding).padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
-            item {
-                Text(
-                    "Регионы",
-                    style = MaterialTheme.typography.titleSmall,
-                    modifier = Modifier.padding(bottom = 4.dp)
-                )
+            item { Text("Регионы", style = MaterialTheme.typography.titleSmall) }
+
+            if (regions.isEmpty()) {
+                item {
+                    Text(
+                        "Нет доступных регионов. Нажмите 🔄 для загрузки списка.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            } else {
+                items(regions, key = { it.id }) { region ->
+                    RegionRow(
+                        region = region,
+                        context = context,
+                        onDownloadClick = { regionToDownload = region }
+                    )
+                }
             }
 
-            items(regions, key = { it.id }) { region ->
-                RegionRow(
-                    region = region,
-                    context = context,
-                    onDownloadClick = { regionToDownload = region }
-                )
-            }
-
             item {
-                Spacer(Modifier.height(8.dp))
-                HorizontalDivider()
-                Spacer(Modifier.height(8.dp))
-                Text(
-                    "Загруженные карты",
-                    style = MaterialTheme.typography.titleSmall,
-                    modifier = Modifier.padding(bottom = 4.dp)
-                )
+                HorizontalDivider(Modifier.padding(vertical = 8.dp))
+                Text("Загруженные карты", style = MaterialTheme.typography.titleSmall)
             }
 
             if (downloaded.isEmpty()) {
@@ -237,13 +257,7 @@ private fun RegionRow(
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Column(Modifier.weight(1f)) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text(
-                            region.title,
-                            style = MaterialTheme.typography.bodyMedium,
-                            maxLines = 2,
-                            overflow = TextOverflow.Ellipsis,
-                            modifier = Modifier.weight(1f, fill = false)
-                        )
+                        Text(region.name, style = MaterialTheme.typography.bodyMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
                         if (hasCards) {
                             Spacer(Modifier.width(6.dp))
                             Icon(Icons.Default.CheckCircle, "Карты", tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(16.dp))
@@ -253,7 +267,6 @@ private fun RegionRow(
                             Icon(Icons.Default.AltRoute, "Граф", tint = MaterialTheme.colorScheme.tertiary, modifier = Modifier.size(16.dp))
                         }
                     }
-                    Spacer(Modifier.height(2.dp))
                     Text(
                         when (state.status) {
                             MapDownloadManager.Status.DOWNLOADING -> {
@@ -373,12 +386,7 @@ private fun DownloadedRegionRow(
             )
             Spacer(Modifier.width(12.dp))
             Column(Modifier.weight(1f)) {
-                Text(
-                    info.name,
-                    style = MaterialTheme.typography.bodyMedium,
-                    maxLines = 2,
-                    overflow = TextOverflow.Ellipsis
-                )
+                Text(info.name, style = MaterialTheme.typography.bodyMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
 
                 val parts = mutableListOf<String>()
                 parts.add("Карты: ${info.sizeBytes / 1024 / 1024} МБ")
@@ -419,7 +427,7 @@ private fun DownloadConfirmDialog(
         },
         text = {
             Column {
-                Text("«${region.title}» (зум ${region.minZoom}-${region.maxZoom})")
+                Text("«${region.name}» (зум ${region.minZoom}-${region.maxZoom})")
                 Spacer(Modifier.height(8.dp))
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Icon(
