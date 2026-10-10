@@ -3,6 +3,9 @@ package com.google.android.calculator.presentation.preview
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
+import android.graphics.BitmapFactory
+import android.widget.Toast
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.layout.*
@@ -18,16 +21,23 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import coil.compose.AsyncImage
 import com.google.android.calculator.di.AppContainer
 import com.google.android.calculator.utils.FileTypeUtils
+import com.google.android.calculator.utils.SecureDelete
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import java.io.File
+
+// Максимальный размер файла для RAM-превью (50 МБ)
+private const val MAX_RAM_BYTES = 50L * 1024 * 1024
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -35,29 +45,75 @@ fun PreviewScreen(fileId: String, appContainer: AppContainer, onBack: () -> Unit
     val context = LocalContext.current
     var fileName by remember { mutableStateOf("Загрузка...") }
     var mimeType by remember { mutableStateOf("") }
-    var tempFile by remember { mutableStateOf<File?>(null) }
     var textContent by remember { mutableStateOf<String?>(null) }
+    var imageBytes by remember { mutableStateOf<ByteArray?>(null) }
     var isLoading by remember { mutableStateOf(true) }
+    var errorText by remember { mutableStateOf<String?>(null) }
 
     LaunchedEffect(fileId) {
         val file = appContainer.getFilesUseCase().find { it.id == fileId }
-        if (file != null) {
-            fileName = file.originalName
-            mimeType = file.mimeType
-            val decrypted = appContainer.vaultRepository.decryptToTempFile(file.encryptedFileName)
-            tempFile = decrypted
-            if (decrypted != null && FileTypeUtils.isTextFile(file.originalName, file.mimeType)) {
-                textContent = try { decrypted.readText(Charsets.UTF_8) } catch (e: Exception) {
-                    try { decrypted.readText(Charsets.ISO_8859_1) } catch (e2: Exception) { null }
+        if (file == null) {
+            errorText = "Файл не найден"
+            isLoading = false
+            return@LaunchedEffect
+        }
+
+        fileName = file.originalName
+        mimeType = file.mimeType
+
+        // 1) Расшифровываем во временный файл (через существующий API)
+        val temp = withContext(Dispatchers.IO) {
+            appContainer.vaultRepository.decryptToTempFile(file.encryptedFileName)
+        }
+
+        if (temp == null || !temp.exists()) {
+            errorText = "Не удалось расшифровать файл"
+            isLoading = false
+            return@LaunchedEffect
+        }
+
+        try {
+            // 2) Читаем содержимое в ОЗУ
+            val bytes = withContext(Dispatchers.IO) {
+                if (temp.length() > MAX_RAM_BYTES) {
+                    null  // слишком большой для RAM
+                } else {
+                    temp.readBytes()
                 }
             }
+
+            // 3) НЕМЕДЛЕННО затираем temp-файл (shred) — не ждём выхода из экрана
+            withContext(Dispatchers.IO) { SecureDelete.shred(context, android.net.Uri.fromFile(temp)) }
+
+            if (bytes == null) {
+                errorText = "Файл слишком большой для просмотра в памяти (>${MAX_RAM_BYTES / 1024 / 1024} МБ)"
+            } else if (file.mimeType.startsWith("image/")) {
+                // Фото → Bitmap в памяти
+                val opts = BitmapFactory.Options().apply { inMutable = true }
+                val bitmap = BitmapFactory.decodeByteArray(bytes, 0, bytes.size, opts)
+                imageBytes = if (bitmap != null) bytes else null
+                if (bitmap == null) errorText = "Не удалось декодировать изображение"
+            } else if (FileTypeUtils.isTextFile(file.originalName, file.mimeType)) {
+                // Текст → String в памяти
+                textContent = try { String(bytes, Charsets.UTF_8) }
+                catch (e: Exception) { String(bytes, Charsets.ISO_8859_1) }
+            } else {
+                // Для остальных типов: поддерживаем только как bytes
+                // (можно расширить, например PDF, но для этого нужен PdfRenderer + File)
+                errorText = "Просмотр этого типа файла пока не поддерживается в RAM-режиме"
+            }
+        } catch (e: Exception) {
+            errorText = "Ошибка: ${e.message}"
+            // Если что-то пошло не так — тоже пытаемся удалить temp
+            withContext(Dispatchers.IO) { temp.delete() }
         }
+
         isLoading = false
     }
 
-    val currentTempFile = tempFile
-    val currentTextContent = textContent
-    val isTextFile = FileTypeUtils.isTextFile(fileName, mimeType) && currentTextContent != null
+    val currentText = textContent
+    val currentBytes = imageBytes
+    val isTextFile = FileTypeUtils.isTextFile(fileName, mimeType) && currentText != null
 
     Scaffold(
         contentWindowInsets = WindowInsets(0, 0, 0, 0),
@@ -78,11 +134,8 @@ fun PreviewScreen(fileId: String, appContainer: AppContainer, onBack: () -> Unit
                     }
                 },
                 actions = {
-                    // Кнопка копирования в TopBar для текстовых файлов
-                    if (isTextFile && currentTextContent != null) {
-                        IconButton(onClick = {
-                            copyToClipboard(context, currentTextContent)
-                        }) {
+                    if (isTextFile) {
+                        IconButton(onClick = { copyToClipboard(context, currentText) }) {
                             Icon(Icons.Default.ContentCopy, "Копировать текст")
                         }
                     }
@@ -98,16 +151,29 @@ fun PreviewScreen(fileId: String, appContainer: AppContainer, onBack: () -> Unit
         ) {
             when {
                 isLoading -> CircularProgressIndicator(Modifier.align(Alignment.Center))
-                mimeType.startsWith("image/") && currentTempFile != null -> ImageViewer(currentTempFile)
-                isTextFile && currentTextContent != null -> {
-                    // Колонка: текст скроллится, статистика внизу зафиксирована
-                    Column(Modifier.fillMaxSize()) {
-                        // Скроллируемый текст
-                        Box(Modifier.weight(1f).fillMaxWidth()) {
-                            TextViewer(fileName, currentTextContent)
-                        }
 
-                        // Нижняя панель со статистикой (не скроллится)
+                errorText != null -> {
+                    val err = errorText
+                    if (err != null) ErrorView(err)
+                }
+
+                mimeType.startsWith("image/") && currentBytes != null -> {
+                    val bitmap = remember(currentBytes) {
+                        BitmapFactory.decodeByteArray(currentBytes, 0, currentBytes.size)
+                    }
+                    if (bitmap != null) {
+                        ImageViewer(bitmap.asImageBitmap())
+                    } else {
+                        ErrorView("Не удалось отобразить изображение")
+                    }
+                }
+
+                isTextFile -> {
+                    val text = currentText ?: return@Scaffold
+                    Column(Modifier.fillMaxSize()) {
+                        Box(Modifier.weight(1f).fillMaxWidth()) {
+                            TextViewer(fileName, text)
+                        }
                         Surface(
                             modifier = Modifier.fillMaxWidth(),
                             tonalElevation = 2.dp,
@@ -121,10 +187,9 @@ fun PreviewScreen(fileId: String, appContainer: AppContainer, onBack: () -> Unit
                                 horizontalArrangement = Arrangement.SpaceBetween,
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
-                                val charCount = currentTextContent.length
-                                val lineCount = currentTextContent.count { it == '\n' } + 1
-                                val wordCount = currentTextContent.split(Regex("\\s+")).count { it.isNotBlank() }
-
+                                val charCount = text.length
+                                val lineCount = text.count { it == '\n' } + 1
+                                val wordCount = text.split(Regex("\\s+")).count { it.isNotBlank() }
                                 StatItem("Символы", charCount.toString())
                                 StatItem("Строки", lineCount.toString())
                                 StatItem("Слова", wordCount.toString())
@@ -132,12 +197,27 @@ fun PreviewScreen(fileId: String, appContainer: AppContainer, onBack: () -> Unit
                         }
                     }
                 }
+
                 else -> UnsupportedView()
             }
         }
     }
 
-    DisposableEffect(Unit) { onDispose { tempFile?.delete() } }
+    // ⭐ НЕТ DisposableEffect с temp-файлом — temp уже затёрт сразу после чтения!
+    // Открытого текста на диске не остаётся ни в какой момент работы приложения.
+}
+
+@Composable
+private fun ErrorView(message: String) {
+    Column(
+        Modifier.fillMaxSize().padding(32.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center
+    ) {
+        Text("⚠️", style = MaterialTheme.typography.displayLarge)
+        Spacer(Modifier.height(16.dp))
+        Text(message, style = MaterialTheme.typography.bodyLarge, color = MaterialTheme.colorScheme.error)
+    }
 }
 
 @Composable
@@ -157,14 +237,19 @@ private fun StatItem(label: String, value: String) {
 }
 
 @Composable
-private fun ImageViewer(imageFile: File) {
+private fun ImageViewer(bitmap: androidx.compose.ui.graphics.ImageBitmap) {
     var scale by remember { mutableStateOf(1f) }
     var offset by remember { mutableStateOf(Offset.Zero) }
 
-    Box(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.surface), contentAlignment = Alignment.Center) {
-        AsyncImage(
-            model = imageFile, contentDescription = "Preview",
-            modifier = Modifier.fillMaxSize()
+    Box(
+        Modifier.fillMaxSize().background(MaterialTheme.colorScheme.surface),
+        contentAlignment = Alignment.Center
+    ) {
+        Image(
+            bitmap = bitmap,
+            contentDescription = "Preview",
+            modifier = Modifier
+                .fillMaxSize()
                 .pointerInput(Unit) {
                     detectTransformGestures { _: Offset, pan: Offset, zoom: Float, _: Float ->
                         val newScale = (scale * zoom).coerceIn(1f, 10f)
@@ -179,8 +264,12 @@ private fun ImageViewer(imageFile: File) {
                         scale = newScale
                     }
                 }
-                .graphicsLayer { scaleX = scale; scaleY = scale; translationX = offset.x; translationY = offset.y },
-            alignment = Alignment.Center
+                .graphicsLayer {
+                    scaleX = scale; scaleY = scale
+                    translationX = offset.x; translationY = offset.y
+                },
+            alignment = Alignment.Center,
+            contentScale = ContentScale.Fit
         )
         if (scale > 1f) {
             FloatingActionButton(
@@ -191,10 +280,18 @@ private fun ImageViewer(imageFile: File) {
                 Icon(Icons.Default.ZoomOutMap, "Сбросить зум", tint = MaterialTheme.colorScheme.onPrimary)
             }
         } else {
-            Surface(Modifier.align(Alignment.BottomCenter).padding(16.dp), shape = MaterialTheme.shapes.medium,
-                color = MaterialTheme.colorScheme.surface.copy(alpha = 0.9f), shadowElevation = 4.dp) {
-                Text("Щипок для зума • Перетаскивание для перемещения", Modifier.padding(12.dp),
-                    style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Surface(
+                Modifier.align(Alignment.BottomCenter).padding(16.dp),
+                shape = MaterialTheme.shapes.medium,
+                color = MaterialTheme.colorScheme.surface.copy(alpha = 0.9f),
+                shadowElevation = 4.dp
+            ) {
+                Text(
+                    "Щипок для зума • Перетаскивание для перемещения",
+                    Modifier.padding(12.dp),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
             }
         }
     }
@@ -210,32 +307,49 @@ private fun TextViewer(fileName: String, text: String) {
             .padding(16.dp)
     ) {
         if (lang != "Text") {
-            Surface(shape = MaterialTheme.shapes.small, color = MaterialTheme.colorScheme.primaryContainer,
-                modifier = Modifier.padding(bottom = 8.dp)) {
-                Text(lang, Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
-                    style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onPrimaryContainer)
+            Surface(
+                shape = MaterialTheme.shapes.small,
+                color = MaterialTheme.colorScheme.primaryContainer,
+                modifier = Modifier.padding(bottom = 8.dp)
+            ) {
+                Text(
+                    lang, Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onPrimaryContainer
+                )
             }
         }
         SelectionContainer {
-            Text(text, Modifier.fillMaxWidth(), style = MaterialTheme.typography.bodyLarge,
-                color = MaterialTheme.colorScheme.onSurface, fontFamily = FontFamily.Monospace)
+            Text(
+                text, Modifier.fillMaxWidth(),
+                style = MaterialTheme.typography.bodyLarge,
+                color = MaterialTheme.colorScheme.onSurface,
+                fontFamily = FontFamily.Monospace
+            )
         }
     }
 }
 
 @Composable
 private fun UnsupportedView() {
-    Column(Modifier.fillMaxSize().padding(32.dp),
-        horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {
+    Column(
+        Modifier.fillMaxSize().padding(32.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center
+    ) {
         Text("Просмотр этого типа файла не поддерживается", style = MaterialTheme.typography.titleMedium)
         Spacer(Modifier.height(8.dp))
-        Text("Но файл зашифрован и безопасно хранится", style = MaterialTheme.typography.bodyMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Text(
+            "Но файл зашифрован и безопасно хранится",
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
     }
 }
 
-private fun copyToClipboard(context: Context, text: String) {
+private fun copyToClipboard(context: Context, text: String?) {
+    val textStr = text ?: return
     val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-    clipboard.setPrimaryClip(ClipData.newPlainText("vault_text", text))
-    android.widget.Toast.makeText(context, "Текст скопирован", android.widget.Toast.LENGTH_SHORT).show()
+    clipboard.setPrimaryClip(ClipData.newPlainText("vault_text", textStr))
+    Toast.makeText(context, "Текст скопирован", Toast.LENGTH_SHORT).show()
 }

@@ -14,13 +14,13 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import com.google.android.calculator.utils.DownloadedRegionInfo
 import com.google.android.calculator.utils.FileLogger
 import com.google.android.calculator.utils.MapDownloadManager
 import com.google.android.calculator.utils.MapStorage
 import com.google.android.calculator.utils.OfflineMapManager
 import com.google.android.calculator.utils.OfflineRegion
 import com.google.android.calculator.utils.OfflineRegions
-import com.google.android.calculator.utils.DownloadedRegionInfo
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -91,7 +91,6 @@ fun OfflineMapsScreen(onBack: () -> Unit) {
                                 val result = OfflineRegions.refreshFromServer()
                                 if (result.isSuccess) {
                                     val updatedRegions = result.getOrNull() ?: emptyList()
-                                    // Обновляем реактивный список — UI перерисуется мгновенно
                                     regions.clear()
                                     regions.addAll(updatedRegions)
 
@@ -132,7 +131,7 @@ fun OfflineMapsScreen(onBack: () -> Unit) {
         }
     ) { padding ->
         LazyColumn(
-            Modifier.fillMaxSize().padding(padding).padding(16.dp),
+            Modifier.navigationBarsPadding().fillMaxSize().padding(padding).padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
             item { Text("Регионы", style = MaterialTheme.typography.titleSmall) }
@@ -257,7 +256,8 @@ private fun RegionRow(
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Column(Modifier.weight(1f)) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text(region.name, style = MaterialTheme.typography.bodyMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        // ⭐ Показываем человекочитаемое имя (title), а не технический name
+                        Text(region.displayName, style = MaterialTheme.typography.bodyMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
                         if (hasCards) {
                             Spacer(Modifier.width(6.dp))
                             Icon(Icons.Default.CheckCircle, "Карты", tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(16.dp))
@@ -427,7 +427,8 @@ private fun DownloadConfirmDialog(
         },
         text = {
             Column {
-                Text("«${region.name}» (зум ${region.minZoom}-${region.maxZoom})")
+                // ⭐ Человекочитаемое имя региона
+                Text("«${region.displayName}» (зум ${region.minZoom}-${region.maxZoom})")
                 Spacer(Modifier.height(8.dp))
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Icon(

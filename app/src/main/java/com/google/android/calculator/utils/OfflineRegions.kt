@@ -13,7 +13,11 @@ data class OfflineRegion(
     val maxZoom: Int,
     val approximateSizeMb: Int,
     val title: String
-)
+) {
+    /** Человекочитаемое имя для UI: title, а если пусто — технический name */
+    val displayName: String
+        get() = title.ifBlank { name }
+}
 
 data class OfflineRegionModel(
     val id: String,
@@ -47,7 +51,7 @@ object OfflineRegions {
     fun toOfflineRegionModel(region: OfflineRegion): OfflineRegionModel {
         return OfflineRegionModel(
             id = region.id,
-            name = region.name,
+            name = region.name,  // для внутренней логики (имя папки/файлов) — стабильный технический name
             latNorth = region.latNorth,
             lonEast = region.lonEast,
             latSouth = region.latSouth,

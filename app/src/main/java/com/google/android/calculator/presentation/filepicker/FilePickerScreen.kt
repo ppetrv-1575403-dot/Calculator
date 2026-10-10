@@ -8,7 +8,8 @@ import android.widget.Toast
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
-import androidx.compose.foundation.clickable
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.grid.GridCells
@@ -17,8 +18,6 @@ import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
-import androidx.compose.foundation.ExperimentalFoundationApi
-import androidx.compose.foundation.combinedClickable
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
@@ -30,11 +29,14 @@ import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.google.android.calculator.di.AppContainer
 import com.google.android.calculator.domain.model.SavedLocation
 import com.google.android.calculator.utils.CoordinateRecognizer
 import com.google.android.calculator.utils.FileTypeUtils
+import com.google.android.calculator.utils.FolderExporter
 import com.google.android.calculator.utils.OriginalFileAction
 import com.google.android.calculator.utils.SecureDelete
 import kotlinx.coroutines.CoroutineScope
@@ -59,7 +61,7 @@ private data class PhotoDraft(
     val source: String?
 )
 
-private enum class FileFilter { ALL, IMAGES, DOCUMENTS }
+private enum class FileFilter { ALL, IMAGES, DOCUMENTS, ZIP }
 private enum class ViewMode { LIST, GALLERY }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -69,7 +71,11 @@ fun FilePickerScreen(
     initialPath: String,
     folderId: String?,
     onBack: () -> Unit,
-    photoLocationMode: Boolean = false
+    photoLocationMode: Boolean = false,
+    importMode: Boolean = false,
+    importFolderMode: Boolean = false,
+    folderPickerMode: Boolean = false,
+    onFolderPicked: ((String) -> Unit)? = null
 ) {
     val context = LocalContext.current
     var currentPath by remember { mutableStateOf(initialPath) }
@@ -80,23 +86,29 @@ fun FilePickerScreen(
     var progressText by remember { mutableStateOf("") }
     var pendingPhoto by remember { mutableStateOf<PhotoDraft?>(null) }
     var photoQueue by remember { mutableStateOf<List<PickerFileItem>>(emptyList()) }
+    var isImportingFolder by remember { mutableStateOf(false) }
 
     var selectionMode by remember { mutableStateOf(false) }
     var selectedPaths by remember { mutableStateOf<Set<String>>(emptySet()) }
 
-    // === Фильтр и режим отображения ===
-    var filter by remember { mutableStateOf(if (photoLocationMode) FileFilter.IMAGES else FileFilter.ALL) }
+    var filter by remember {
+        mutableStateOf(
+            when {
+                importMode -> FileFilter.ZIP
+                folderPickerMode -> FileFilter.ALL
+                importFolderMode -> FileFilter.ALL
+                photoLocationMode -> FileFilter.IMAGES
+                else -> FileFilter.ALL
+            }
+        )
+    }
     var viewMode by remember { mutableStateOf(ViewMode.LIST) }
 
     val scope = rememberCoroutineScope()
 
-    // Режим поиска: фильтры ищут рекурсивно во всех подпапках
     val isSearchMode = filter != FileFilter.ALL
-
-    // Что показывать: текущая папка (ALL) или результаты рекурсивного поиска
     val displayFiles = if (isSearchMode) searchResults else allFiles
 
-    // === Загрузка: текущая папка или рекурсивный поиск ===
     LaunchedEffect(currentPath, filter) {
         isLoading = true
         if (filter == FileFilter.ALL) {
@@ -113,7 +125,6 @@ fun FilePickerScreen(
         isLoading = false
     }
 
-    // === Диалог фото-точки (обрабатывает очередь) ===
     val draft = pendingPhoto
     if (draft != null && !isProcessing) {
         PhotoLocationDialog(
@@ -189,15 +200,28 @@ fun FilePickerScreen(
         topBar = {
             TopAppBar(
                 title = {
-                    Text(
-                        when {
-                            selectionMode -> "Выбрано: ${selectedPaths.size}"
-                            isSearchMode -> "Найдено: ${displayFiles.size}"
-                            photoLocationMode -> "Фото: ${currentPath.substringAfterLast("/", "Файлы")}"
-                            else -> currentPath.substringAfterLast("/", "Файлы")
-                        },
-                        style = MaterialTheme.typography.titleMedium
-                    )
+                    Column {
+                        Text(
+                            when {
+                                selectionMode -> "Выбрано: ${selectedPaths.size}"
+                                folderPickerMode -> "Выбор папки"
+                                importFolderMode -> "Импорт папки"
+                                importMode -> "Импорт ZIP"
+                                photoLocationMode -> "Выбор фото"
+                                else -> currentPath.substringAfterLast("/", "Файлы")
+                            },
+                            style = MaterialTheme.typography.titleMedium,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                        Text(
+                            currentPath,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
                 },
                 navigationIcon = {
                     if (selectionMode) {
@@ -223,43 +247,96 @@ fun FilePickerScreen(
                     }
                 },
                 actions = {
-                    IconButton(
-                        onClick = { viewMode = if (viewMode == ViewMode.LIST) ViewMode.GALLERY else ViewMode.LIST },
-                        enabled = !isProcessing
-                    ) {
-                        Icon(
-                            if (viewMode == ViewMode.LIST) Icons.Default.GridView else Icons.Default.ViewList,
-                            if (viewMode == ViewMode.LIST) "Галерея" else "Список"
-                        )
-                    }
+                    when {
+                        folderPickerMode -> {
+                            Row {
+                                IconButton(onClick = onBack) {
+                                    Icon(Icons.Default.Close, "Закрыть")
+                                }
+                                IconButton(
+                                    onClick = {
+                                        onFolderPicked?.invoke(currentPath)
+                                        onBack()
+                                    }
+                                ) {
+                                    Icon(
+                                        Icons.Default.Check,
+                                        "Выбрать эту папку",
+                                        tint = MaterialTheme.colorScheme.primary
+                                    )
+                                }
+                            }
+                        }
+                        importFolderMode -> {
+                            TextButton(
+                                onClick = {
+                                    isImportingFolder = true
+                                    scope.launch {
+                                        val count = FolderExporter.importFolderFromPath(
+                                            sourcePath = currentPath,
+                                            targetFolderId = folderId,
+                                            vaultRepository = appContainer.vaultRepository,
+                                            folderRepository = appContainer.folderRepository
+                                        )
+                                        withContext(Dispatchers.Main) {
+                                            Toast.makeText(
+                                                context,
+                                                "✅ Импортировано файлов: $count",
+                                                Toast.LENGTH_LONG
+                                            ).show()
+                                            appContainer.requestVaultRefresh()
+                                        }
+                                        isImportingFolder = false
+                                        onBack()
+                                    }
+                                },
+                                enabled = !isImportingFolder
+                            ) {
+                                Icon(Icons.Default.Download, null, Modifier.size(18.dp))
+                                Spacer(Modifier.width(4.dp))
+                                Text("Импортировать эту папку")
+                            }
+                        }
+                        !importMode -> {
+                            IconButton(
+                                onClick = { viewMode = if (viewMode == ViewMode.LIST) ViewMode.GALLERY else ViewMode.LIST },
+                                enabled = !isProcessing
+                            ) {
+                                Icon(
+                                    if (viewMode == ViewMode.LIST) Icons.Default.GridView else Icons.Default.ViewList,
+                                    if (viewMode == ViewMode.LIST) "Галерея" else "Список"
+                                )
+                            }
 
-                    IconButton(
-                        onClick = {
-                            selectionMode = !selectionMode
-                            if (!selectionMode) selectedPaths = emptySet()
-                        },
-                        enabled = !isProcessing
-                    ) {
-                        Icon(
-                            Icons.Default.Checklist,
-                            if (selectionMode) "Выйти из выбора" else "Выбрать несколько",
-                            tint = if (selectionMode)
-                                MaterialTheme.colorScheme.primary
-                            else
-                                MaterialTheme.colorScheme.onSurface
-                        )
-                    }
+                            IconButton(
+                                onClick = {
+                                    selectionMode = !selectionMode
+                                    if (!selectionMode) selectedPaths = emptySet()
+                                },
+                                enabled = !isProcessing
+                            ) {
+                                Icon(
+                                    Icons.Default.Checklist,
+                                    if (selectionMode) "Выйти из выбора" else "Выбрать несколько",
+                                    tint = if (selectionMode)
+                                        MaterialTheme.colorScheme.primary
+                                    else
+                                        MaterialTheme.colorScheme.onSurface
+                                )
+                            }
 
-                    if (!selectionMode) {
-                        IconButton(onClick = onBack, enabled = !isProcessing) {
-                            Icon(Icons.Default.Close, "Закрыть")
+                            if (!selectionMode) {
+                                IconButton(onClick = onBack, enabled = !isProcessing) {
+                                    Icon(Icons.Default.Close, "Закрыть")
+                                }
+                            }
                         }
                     }
                 }
             )
         },
         floatingActionButton = {
-            if (selectionMode && selectedPaths.isNotEmpty()) {
+            if (!importMode && !folderPickerMode && !importFolderMode && selectionMode && selectedPaths.isNotEmpty()) {
                 ExtendedFloatingActionButton(
                     onClick = {
                         val items = selectedPaths.toList()
@@ -311,8 +388,7 @@ fun FilePickerScreen(
                 .padding(padding)
                 .navigationBarsPadding()
         ) {
-            // === Панель фильтров ===
-            if (!photoLocationMode) {
+            if (!photoLocationMode && !importMode && !importFolderMode && !folderPickerMode) {
                 Row(
                     Modifier
                         .fillMaxWidth()
@@ -340,11 +416,12 @@ fun FilePickerScreen(
                 }
             }
 
-            Box(Modifier.fillMaxSize()) {
+            Box(Modifier.weight(1f)) {
                 when {
                     isLoading -> CircularProgressIndicator(Modifier.align(Alignment.Center))
                     displayFiles.isEmpty() -> Text(
                         when {
+                            importMode -> "Нет ZIP-файлов в этой папке и подпапках"
                             isSearchMode -> "Ничего не найдено в этой папке и подпапках"
                             else -> "Папка пуста"
                         },
@@ -368,8 +445,12 @@ fun FilePickerScreen(
                                             selectionMode = selectionMode,
                                             selectedPaths = selectedPaths,
                                             onSelectionChange = { selectedPaths = it },
-                                            onNavigate = { currentPath = it; filter = FileFilter.ALL },
+                                            onNavigate = { newPath ->
+                                                currentPath = newPath
+                                                if (!importMode && !folderPickerMode && !importFolderMode) filter = FileFilter.ALL
+                                            },
                                             photoLocationMode = photoLocationMode,
+                                            importMode = importMode,
                                             context = context,
                                             appContainer = appContainer,
                                             folderId = folderId,
@@ -410,8 +491,12 @@ fun FilePickerScreen(
                                             selectionMode = selectionMode,
                                             selectedPaths = selectedPaths,
                                             onSelectionChange = { selectedPaths = it },
-                                            onNavigate = { currentPath = it; filter = FileFilter.ALL },
+                                            onNavigate = { newPath ->
+                                                currentPath = newPath
+                                                if (!importMode && !folderPickerMode && !importFolderMode) filter = FileFilter.ALL
+                                            },
                                             photoLocationMode = photoLocationMode,
+                                            importMode = importMode,
                                             context = context,
                                             appContainer = appContainer,
                                             folderId = folderId,
@@ -425,7 +510,7 @@ fun FilePickerScreen(
                                         )
                                     },
                                     onLongClick = {
-                                        if (!selectionMode) {
+                                        if (!selectionMode && !importMode && !folderPickerMode && !importFolderMode) {
                                             selectionMode = true
                                             selectedPaths = setOf(file.path)
                                         }
@@ -435,15 +520,64 @@ fun FilePickerScreen(
                         }
                     }
                 }
-                if (isProcessing) {
-                    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                
+                // ⭐ Центрированный прогресс с полупрозрачным фоном
+                if (isProcessing || isImportingFolder) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.8f)),
+                        contentAlignment = Alignment.Center
+                    ) {
                         Card(Modifier.padding(32.dp)) {
-                            Column(Modifier.padding(24.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+                            Column(
+                                Modifier.padding(24.dp),
+                                horizontalAlignment = Alignment.CenterHorizontally
+                            ) {
                                 CircularProgressIndicator()
                                 Spacer(Modifier.height(16.dp))
-                                Text(progressText)
+                                Text(
+                                    if (isImportingFolder) "Импорт папки..." else progressText,
+                                    textAlign = TextAlign.Center
+                                )
                             }
                         }
+                    }
+                }
+            }
+
+            // ⭐ Нижняя панель со счётчиком для режимов поиска
+            if (isSearchMode) {
+                Surface(
+                    modifier = Modifier.fillMaxWidth(),
+                    tonalElevation = 2.dp,
+                    shadowElevation = 4.dp,
+                    color = MaterialTheme.colorScheme.surface.copy(alpha = 0.95f)
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 16.dp, vertical = 10.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(
+                            Icons.Default.Search, null,
+                            modifier = Modifier.size(16.dp),
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        Spacer(Modifier.width(8.dp))
+                        val countLabel = when (filter) {
+                            FileFilter.IMAGES -> "фото"
+                            FileFilter.DOCUMENTS -> "документов"
+                            FileFilter.ZIP -> "архивов"
+                            FileFilter.ALL -> "файлов"
+                        }
+                        Text(
+                            if (isLoading) "Поиск..."
+                            else "Найдено: ${displayFiles.size} $countLabel • включая подпапки",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
                     }
                 }
             }
@@ -451,15 +585,11 @@ fun FilePickerScreen(
     }
 }
 
-// ==================== Относительный путь для результатов поиска ====================
-
 private fun relativePath(basePath: String, filePath: String): String {
     val rel = filePath.removePrefix(basePath).trimStart('/')
     val dir = rel.substringBeforeLast('/', "")
     return if (dir.isEmpty()) "" else "📁 $dir"
 }
-
-// ==================== Карточка файла в режиме списка ====================
 
 @Composable
 private fun ListItemCard(
@@ -499,6 +629,14 @@ private fun ListItemCard(
                 file.mimeType.startsWith("image/") -> ThumbImage(
                     file.path,
                     Modifier.size(40.dp).padding(end = 12.dp)
+                )
+                isZipName(file.name) -> Icon(
+                    Icons.Default.FolderZip, null,
+                    tint = if (isSelected)
+                        MaterialTheme.colorScheme.onPrimaryContainer
+                    else
+                        MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.size(40.dp).padding(end = 12.dp)
                 )
                 else -> {
                     val icon = when {
@@ -543,8 +681,6 @@ private fun ListItemCard(
         }
     }
 }
-
-// ==================== Элемент галереи ====================
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
@@ -608,6 +744,7 @@ private fun GalleryItem(
             }
             else -> {
                 val icon = when {
+                    isZipName(file.name) -> Icons.Default.FolderZip
                     file.mimeType.startsWith("video/") -> Icons.Default.Videocam
                     FileTypeUtils.isTextFile(file.name, file.mimeType) -> Icons.Default.Description
                     else -> Icons.Default.InsertDriveFile
@@ -652,8 +789,6 @@ private fun GalleryItem(
     }
 }
 
-// ==================== Обработка клика по файлу ====================
-
 private fun handleFileClick(
     file: PickerFileItem,
     selectionMode: Boolean,
@@ -661,6 +796,7 @@ private fun handleFileClick(
     onSelectionChange: (Set<String>) -> Unit,
     onNavigate: (String) -> Unit,
     photoLocationMode: Boolean,
+    importMode: Boolean,
     context: Context,
     appContainer: AppContainer,
     folderId: String?,
@@ -671,58 +807,89 @@ private fun handleFileClick(
 ) {
     val isSelected = selectedPaths.contains(file.path)
 
-    if (selectionMode) {
-        onSelectionChange(
+    when {
+        selectionMode -> onSelectionChange(
             if (isSelected) selectedPaths - file.path
             else selectedPaths + file.path
         )
-    } else if (file.isDirectory) {
-        onNavigate(file.path)
-    } else if (photoLocationMode) {
-        onProcessingChange(true, "Распознавание координат...")
-        scope.launch {
-            try {
-                val draft = withContext(Dispatchers.IO) {
-                    buildPhotoDraft(context, file)
-                }
-                onPhotoDraft(draft)
-            } finally {
-                onProcessingChange(false, "")
-            }
-        }
-    } else {
-        onProcessingChange(true, "Шифрование и сохранение...")
-        scope.launch {
-            try {
-                val fileUri = Uri.fromFile(File(file.path))
-                val result = withContext(Dispatchers.IO) {
-                    appContainer.addFileUseCase(fileUri, file.name, file.mimeType, folderId)
-                }
-                if (result.isSuccess) {
-                    handleOriginalFile(context, fileUri, appContainer)
-                    appContainer.requestVaultRefresh()
-                    onBack()
-                } else {
-                    withContext(Dispatchers.Main) {
-                        Toast.makeText(
-                            context,
-                            "Ошибка: ${result.exceptionOrNull()?.message ?: "неизвестно"}",
-                            Toast.LENGTH_LONG
-                        ).show()
+        file.isDirectory -> onNavigate(file.path)
+        importMode -> {
+            if (isZipName(file.name)) {
+                onProcessingChange(true, "Распаковка и шифрование...")
+                scope.launch {
+                    try {
+                        val zipUri = Uri.fromFile(File(file.path))
+                        val count = FolderExporter.importFolder(
+                            context = context,
+                            zipUri = zipUri,
+                            targetFolderId = folderId,
+                            vaultRepository = appContainer.vaultRepository,
+                            folderRepository = appContainer.folderRepository
+                        )
+                        withContext(Dispatchers.Main) {
+                            Toast.makeText(
+                                context,
+                                "✅ Импортировано файлов: $count",
+                                Toast.LENGTH_LONG
+                            ).show()
+                            appContainer.requestVaultRefresh()
+                        }
+                        onBack()
+                    } catch (e: Exception) {
+                        withContext(Dispatchers.Main) {
+                            Toast.makeText(context, "❌ ${e.message}", Toast.LENGTH_LONG).show()
+                        }
+                    } finally {
+                        onProcessingChange(false, "")
                     }
                 }
-            } catch (e: Exception) {
-                withContext(Dispatchers.Main) {
-                    Toast.makeText(context, "Ошибка: ${e.message}", Toast.LENGTH_LONG).show()
+            }
+        }
+        photoLocationMode -> {
+            onProcessingChange(true, "Распознавание координат...")
+            scope.launch {
+                try {
+                    val draft = withContext(Dispatchers.IO) {
+                        buildPhotoDraft(context, file)
+                    }
+                    onPhotoDraft(draft)
+                } finally {
+                    onProcessingChange(false, "")
                 }
-            } finally {
-                onProcessingChange(false, "")
+            }
+        }
+        else -> {
+            onProcessingChange(true, "Шифрование и сохранение...")
+            scope.launch {
+                try {
+                    val fileUri = Uri.fromFile(File(file.path))
+                    val result = withContext(Dispatchers.IO) {
+                        appContainer.addFileUseCase(fileUri, file.name, file.mimeType, folderId)
+                    }
+                    if (result.isSuccess) {
+                        handleOriginalFile(context, fileUri, appContainer)
+                        appContainer.requestVaultRefresh()
+                        onBack()
+                    } else {
+                        withContext(Dispatchers.Main) {
+                            Toast.makeText(
+                                context,
+                                "Ошибка: ${result.exceptionOrNull()?.message ?: "неизвестно"}",
+                                Toast.LENGTH_LONG
+                            ).show()
+                        }
+                    }
+                } catch (e: Exception) {
+                    withContext(Dispatchers.Main) {
+                        Toast.makeText(context, "Ошибка: ${e.message}", Toast.LENGTH_LONG).show()
+                    }
+                } finally {
+                    onProcessingChange(false, "")
+                }
             }
         }
     }
 }
-
-// ==================== Создание черновика фото-точки ====================
 
 private suspend fun buildPhotoDraft(context: Context, file: PickerFileItem): PhotoDraft =
     withContext(Dispatchers.IO) {
@@ -739,8 +906,6 @@ private suspend fun buildPhotoDraft(context: Context, file: PickerFileItem): Pho
         )
     }
 
-// ==================== Рекурсивный сбор по фильтру ====================
-
 private fun collectFilesFiltered(
     dir: File,
     filter: FileFilter,
@@ -755,6 +920,7 @@ private fun collectFilesFiltered(
             val matches = when (filter) {
                 FileFilter.IMAGES -> mime.startsWith("image/") || isImageName(f.name)
                 FileFilter.DOCUMENTS -> FileTypeUtils.isTextFile(f.name, mime) || mime == "application/pdf"
+                FileFilter.ZIP -> isZipName(f.name)
                 FileFilter.ALL -> true
             }
             if (matches) {
@@ -763,8 +929,6 @@ private fun collectFilesFiltered(
         }
     }
 }
-
-// ==================== Массовая обработка выбора ====================
 
 private suspend fun processBulkSelection(
     context: Context,
@@ -865,8 +1029,6 @@ private fun collectFiles(
         }
     }
 }
-
-// ==================== Диалог фото-точки ====================
 
 @Composable
 private fun PhotoLocationDialog(
@@ -972,8 +1134,6 @@ private fun PhotoLocationDialog(
     )
 }
 
-// ==================== Миниатюры ====================
-
 @Composable
 private fun ThumbImage(path: String, modifier: Modifier) {
     var bmp by remember(path) { mutableStateOf<Bitmap?>(null) }
@@ -1018,7 +1178,8 @@ private fun loadThumbnail(path: String, target: Int): Bitmap? = try {
     null
 }
 
-// ==================== Служебное ====================
+private fun isZipName(name: String): Boolean =
+    name.substringAfterLast('.', "").equals("zip", ignoreCase = true)
 
 private suspend fun handleOriginalFile(
     context: Context,
@@ -1074,4 +1235,4 @@ private fun guessMime(name: String): String = when (name.substringAfterLast(".",
 }
 
 private fun formatSize(size: Long): String =
-    if (size < 1024) "$size B" else if (size < 1024 * 1024) "${size / 1024} KB" else "${size / (1024 * 1024)} MB"
+    if (size < 1024) "$size Б" else if (size < 1024 * 1024) "${size / 1024} КБ" else "${size / (1024 * 1024)} МБ"

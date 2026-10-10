@@ -166,6 +166,65 @@ object FolderExporter {
         importedCount
     }
 
+    /**
+     * Импорт обычной папки с диска (без ZIP) с воссозданием структуры подпапок.
+     * @param sourcePath абсолютный путь к папке на устройстве
+     * @param targetFolderId ID папки в хранилище, куда импортировать (null = корень)
+     * @return количество импортированных файлов
+     */
+    suspend fun importFolderFromPath(
+        sourcePath: String,
+        targetFolderId: String?,
+        vaultRepository: VaultRepository,
+        folderRepository: FolderRepository
+    ): Int = withContext(Dispatchers.IO) {
+        var importedCount = 0
+        val folderIdMap = mutableMapOf<String, String>()
+        folderIdMap[""] = targetFolderId ?: ""
+
+        val sourceDir = File(sourcePath)
+        if (!sourceDir.exists() || !sourceDir.isDirectory) return@withContext 0
+
+        val allFiles = mutableListOf<Pair<File, String>>()
+        collectDiskFiles(sourceDir, "", allFiles)
+
+        allFiles.forEach { (file, relativeDir) ->
+            val parentFolderId = findOrCreateFolder(
+                relativeDir,
+                folderIdMap,
+                folderRepository,
+                targetFolderId
+            )
+
+            val mimeType = guessMimeType(file.name)
+            val result = vaultRepository.addFile(
+                Uri.fromFile(file),
+                file.name,
+                mimeType,
+                parentFolderId.takeIf { it.isNotEmpty() }
+            )
+            if (result.isSuccess) importedCount++
+        }
+
+        importedCount
+    }
+
+    private fun collectDiskFiles(
+        dir: File,
+        relativePath: String,
+        out: MutableList<Pair<File, String>>
+    ) {
+        dir.listFiles()?.forEach { f ->
+            if (f.name.startsWith(".")) return@forEach
+            if (f.isDirectory) {
+                val newRel = if (relativePath.isEmpty()) f.name else "$relativePath/${f.name}"
+                collectDiskFiles(f, newRel, out)
+            } else {
+                out.add(f to relativePath)
+            }
+        }
+    }
+
     private suspend fun findOrCreateFolder(
         path: String,
         folderIdMap: MutableMap<String, String>,

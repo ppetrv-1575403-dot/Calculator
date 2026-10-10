@@ -1,4 +1,4 @@
- package com.google.android.calculator.presentation.vault
+package com.google.android.calculator.presentation.vault
 
 import android.content.Context
 import android.content.Intent
@@ -54,7 +54,9 @@ fun VaultScreen(
     onPreviewFile: (String) -> Unit,
     onOpenSettings: () -> Unit,
     onEditLocation: (String) -> Unit,
-    onAddPhotoLocation: (String) -> Unit
+    onAddPhotoLocation: (String) -> Unit,
+    onImportZip: (String) -> Unit,
+    onImportFolder: () -> Unit
 ) {
     val context = LocalContext.current
     val viewModel = remember {
@@ -66,12 +68,10 @@ fun VaultScreen(
     var folderName by remember { mutableStateOf("") }
     var showLogsDialog by remember { mutableStateOf(false) }
     
-    // === ВАЖНО: hasStoragePermission теперь mutableStateOf ===
     var hasStoragePermission by remember { 
         mutableStateOf(PermissionUtils.hasManageExternalStorage()) 
     }
     
-    // === Обновляем hasStoragePermission при onResume ===
     val lifecycleOwner = LocalLifecycleOwner.current
     DisposableEffect(lifecycleOwner) {
         val observer = LifecycleEventObserver { _, event ->
@@ -85,16 +85,12 @@ fun VaultScreen(
         }
     }
     
-    // Состояния для диалогов подтверждения удаления
     var fileToDelete by remember { mutableStateOf<VaultFile?>(null) }
     var locationToDelete by remember { mutableStateOf<SavedLocation?>(null) }
     var folderToDelete by remember { mutableStateOf<VaultFolder?>(null) }
 
-    // === Состояния для экспорта/импорта папок ===
     var showExportDialog by remember { mutableStateOf<VaultFolder?>(null) }
-    var showImportDialog by remember { mutableStateOf(false) }
     var isExporting by remember { mutableStateOf(false) }
-    var isImporting by remember { mutableStateOf(false) }
 
     val currentFolderId = viewModel.currentFolder?.id ?: ""
 
@@ -102,36 +98,12 @@ fun VaultScreen(
         ActivityResultContracts.StartActivityForResult()
     ) {
         appContainer.setFileOperationInProgress(false)
-        // === Обновляем разрешение сразу при возврате из настроек ===
         hasStoragePermission = PermissionUtils.hasManageExternalStorage()
     }
 
     val isDecoyMode = VaultManager.currentMode == VaultMode.DECOY
     
     LaunchedEffect(Unit) { appContainer.vaultRefresh.collect { viewModel.refresh() } }
-
-    // === Launcher для импорта ZIP ===
-    val importLauncher = rememberLauncherForActivityResult(
-        ActivityResultContracts.OpenDocument()
-    ) { uri: Uri? ->
-        if (uri != null) {
-            isImporting = true
-            scope.launch {
-                val count = FolderExporter.importFolder(
-                    context = context,
-                    zipUri = uri,
-                    targetFolderId = viewModel.currentFolder?.id,
-                    vaultRepository = appContainer.vaultRepository,
-                    folderRepository = appContainer.folderRepository
-                )
-                withContext(Dispatchers.Main) {
-                    Toast.makeText(context, "✅ Импортировано файлов: $count", Toast.LENGTH_LONG).show()
-                    appContainer.requestVaultRefresh()
-                }
-                isImporting = false
-            }
-        }
-    }
 
     val exportLauncher = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("*/*")) { uri ->
         appContainer.setFileOperationInProgress(false)
@@ -201,7 +173,7 @@ fun VaultScreen(
                         }
                     }
 
-                    if (!isDecoyMode)  {
+                    if (!isDecoyMode) {
                         MiniFab(Icons.Default.AddLocation, "Точка") { fabExpanded = false; onAddLocation(currentFolderId) }
                         Spacer(Modifier.height(8.dp))
                     
@@ -212,7 +184,10 @@ fun VaultScreen(
                     MiniFab(Icons.Default.CreateNewFolder, "Папка") { fabExpanded = false; folderName = ""; showCreateFolderDialog = true }
                     Spacer(Modifier.height(8.dp))
                     
-                    MiniFab(Icons.Default.Download, "Импорт") { fabExpanded = false; showImportDialog = true }
+                    MiniFab(Icons.Default.Download, "Импорт ZIP") { fabExpanded = false; onImportZip(currentFolderId) }
+                    Spacer(Modifier.height(8.dp))
+                    
+                    MiniFab(Icons.Default.Folder, "Импорт папки") { fabExpanded = false; onImportFolder() }
                     Spacer(Modifier.height(8.dp))
                 }
                 
@@ -387,34 +362,16 @@ fun VaultScreen(
         )
     }
 
-    // === Диалог подтверждения импорта ===
-    if (showImportDialog) {
-        AlertDialog(
-            onDismissRequest = { showImportDialog = false },
-            title = { Text("Импорт папки") },
-            text = { Text("Выберите ZIP-архив для импорта.\n\nСтруктура папок будет воссоздана в текущей папке.") },
-            confirmButton = {
-                TextButton(
-                    onClick = {
-                        showImportDialog = false
-                        importLauncher.launch(arrayOf("application/zip", "application/x-zip-compressed"))
-                    }
-                ) { Text("Выбрать файл") }
-            },
-            dismissButton = { TextButton(onClick = { showImportDialog = false }) { Text("Отмена") } }
-        )
-    }
-
-    // === Прогресс экспорта/импорта ===
-    if (isExporting || isImporting) {
+    // === Прогресс экспорта ===
+    if (isExporting) {
         AlertDialog(
             onDismissRequest = { },
-            title = { Text(if (isExporting) "Экспорт..." else "Импорт...") },
+            title = { Text("Экспорт...") },
             text = {
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
                     CircularProgressIndicator()
                     Spacer(Modifier.height(16.dp))
-                    Text(if (isExporting) "Расшифровка и упаковка файлов" else "Распаковка и шифрование файлов")
+                    Text("Расшифровка и упаковка файлов")
                 }
             },
             confirmButton = { }
@@ -436,7 +393,6 @@ fun VaultScreen(
         )
     }
 
-    // Диалог подтверждения удаления файла
     if (fileToDelete != null) {
         AlertDialog(
             onDismissRequest = { fileToDelete = null },
@@ -449,17 +405,12 @@ fun VaultScreen(
                         fileToDelete = null
                     },
                     colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.error)
-                ) {
-                    Text("Удалить")
-                }
+                ) { Text("Удалить") }
             },
-            dismissButton = {
-                TextButton(onClick = { fileToDelete = null }) { Text("Отмена") }
-            }
+            dismissButton = { TextButton(onClick = { fileToDelete = null }) { Text("Отмена") } }
         )
     }
 
-    // Диалог подтверждения удаления локации
     if (locationToDelete != null) {
         AlertDialog(
             onDismissRequest = { locationToDelete = null },
@@ -472,17 +423,12 @@ fun VaultScreen(
                         locationToDelete = null
                     },
                     colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.error)
-                ) {
-                    Text("Удалить")
-                }
+                ) { Text("Удалить") }
             },
-            dismissButton = {
-                TextButton(onClick = { locationToDelete = null }) { Text("Отмена") }
-            }
+            dismissButton = { TextButton(onClick = { locationToDelete = null }) { Text("Отмена") } }
         )
     }
 
-    // Диалог подтверждения удаления папки
     if (folderToDelete != null) {
         AlertDialog(
             onDismissRequest = { folderToDelete = null },
@@ -495,13 +441,9 @@ fun VaultScreen(
                         folderToDelete = null
                     },
                     colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.error)
-                ) {
-                    Text("Удалить")
-                }
+                ) { Text("Удалить") }
             },
-            dismissButton = {
-                TextButton(onClick = { folderToDelete = null }) { Text("Отмена") }
-            }
+            dismissButton = { TextButton(onClick = { folderToDelete = null }) { Text("Отмена") } }
         )
     }
 

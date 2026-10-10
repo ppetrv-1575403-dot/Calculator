@@ -37,7 +37,7 @@ object MapDownloadManager {
 
     fun start(context: Context, region: OfflineRegionModel, forceAll: Boolean = false) {
         val regionId = region.id
-        cancelDownload(regionId)  // ← исправлено
+        cancelDownload(regionId)
 
         val state = states.getOrPut(regionId) { MutableStateFlow(State()) }
         if (state.value.status == Status.ERROR) state.value = State()
@@ -71,9 +71,9 @@ object MapDownloadManager {
         jobs[regionId] = job
     }
 
-    fun pause(regionId: String) = cancelDownload(regionId)  // ← исправлено
+    fun pause(regionId: String) = cancelDownload(regionId)
 
-    private fun cancelDownload(regionId: String) {  // ← переименовано
+    private fun cancelDownload(regionId: String) {
         jobs.remove(regionId)?.cancel()
     }
 
@@ -86,12 +86,15 @@ object MapDownloadManager {
         region: OfflineRegionModel,
         state: MutableStateFlow<State>
     ) {
+        val url = Constants.getMbtilesUrl(region.id)
+        FileLogger.d("MapDL", "📥 Map URL: $url")
+
         val targetFile = MapStorage.getMapFile(region.id)
         targetFile.parentFile?.mkdirs()
         val tmpFile = File(targetFile.parentFile, "tmp_${encode(region.id)}.bin")
         val existingBytes = if (tmpFile.exists()) tmpFile.length() else 0L
 
-        val connection = (URL(Constants.getMbtilesUrl(region.id)).openConnection() as HttpURLConnection).apply {
+        val connection = (URL(url).openConnection() as HttpURLConnection).apply {
             connectTimeout = 30_000; readTimeout = 30_000; instanceFollowRedirects = true
             if (existingBytes > 0) setRequestProperty("Range", "bytes=$existingBytes-")
         }
@@ -106,7 +109,10 @@ object MapDownloadManager {
                 append = true
             }
             416 -> { tmpFile.delete(); connection.disconnect(); return downloadMap(context, region, state) }
-            else -> { connection.disconnect(); throw Exception("Ошибка HTTP: $code") }
+            else -> {
+                connection.disconnect()
+                throw Exception("Карта недоступна (HTTP $code): $url")
+            }
         }
 
         try {
@@ -130,9 +136,10 @@ object MapDownloadManager {
             }
         } finally { connection.disconnect() }
 
-        if (tmpFile.length() < 1024) { tmpFile.delete(); throw Exception("Файл слишком мал или повреждён") }
+        if (tmpFile.length() < 1024) { tmpFile.delete(); throw Exception("Файл карты слишком мал или повреждён") }
         if (targetFile.exists()) targetFile.delete()
         tmpFile.renameTo(targetFile)
+        FileLogger.i("MapDL", "✅ Map downloaded: ${tmpFile.length()} bytes")
     }
 
     private suspend fun downloadGraph(
@@ -140,10 +147,13 @@ object MapDownloadManager {
         region: OfflineRegionModel,
         state: MutableStateFlow<State>
     ) {
+        val url = Constants.getGraphUrl(region.id)
+        FileLogger.d("MapDL", "📥 Graph URL: $url")
+
         val zipTmp = File(context.cacheDir, "tmp_${encode(region.id)}_graph.zip")
         val existingBytes = if (zipTmp.exists()) zipTmp.length() else 0L
 
-        val connection = (URL(Constants.getGraphUrl(region.id)).openConnection() as HttpURLConnection).apply {
+        val connection = (URL(url).openConnection() as HttpURLConnection).apply {
             connectTimeout = 30_000; readTimeout = 30_000; instanceFollowRedirects = true
             if (existingBytes > 0) setRequestProperty("Range", "bytes=$existingBytes-")
         }
@@ -158,7 +168,10 @@ object MapDownloadManager {
                 append = true
             }
             416 -> { zipTmp.delete(); connection.disconnect(); return downloadGraph(context, region, state) }
-            else -> { connection.disconnect(); throw Exception("Ошибка HTTP: $code") }
+            else -> {
+                connection.disconnect()
+                throw Exception("Граф недоступен (HTTP $code): $url")
+            }
         }
 
         try {
@@ -225,7 +238,7 @@ object MapDownloadManager {
             }
 
             MapStorage.markGraphReady(region.id)
-            FileLogger.d("MapDL", "Graph extracted: ${files.size} files, marker created")
+            FileLogger.i("MapDL", "✅ Graph extracted: ${files.size} files from $url")
         } finally {
             zipTmp.delete()
             readyDir.deleteRecursively()

@@ -13,7 +13,7 @@ object Constants {
 
     fun getGraphUrl(regionId: String): String {
         // Пример: https://your-storage.com/gomel_region.zip
-        return "$BASE_DOWNLOAD_URL/${regionId}.zip"
+        return "$BASE_DOWNLOAD_URL/${regionId}_graph.zip"
     }
 }
 

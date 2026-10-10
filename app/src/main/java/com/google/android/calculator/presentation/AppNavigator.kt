@@ -8,7 +8,6 @@ import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
-import com.google.android.calculator.presentation.MainActivity
 import com.google.android.calculator.di.AppContainer
 import com.google.android.calculator.presentation.calculator.CalculatorScreen
 import com.google.android.calculator.presentation.filepicker.FilePickerScreen
@@ -22,10 +21,10 @@ import com.google.android.calculator.presentation.vault.VaultScreen
 import com.google.android.calculator.utils.DecoySeeder
 import com.google.android.calculator.utils.PermissionUtils
 import com.google.android.calculator.utils.VaultManager
-import com.google.android.calculator.utils.VaultMode
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 @Composable
 fun AppNavigator(appContainer: AppContainer, mainActivity: MainActivity) {
@@ -38,7 +37,7 @@ fun AppNavigator(appContainer: AppContainer, mainActivity: MainActivity) {
                 navController.navigate("calculator") { popUpTo(0) { inclusive = true } }
                 appContainer.resetNavigateSignal()
                 mainActivity.markVaultAsClosed()
-                VaultManager.enterMode(VaultMode.REAL)
+                VaultManager.enterSlot(VaultManager.REAL_ID)
             }
         }
     }
@@ -63,7 +62,7 @@ fun AppNavigator(appContainer: AppContainer, mainActivity: MainActivity) {
                 onBack = {
                     navController.popBackStack()
                     mainActivity.markVaultAsClosed()
-                    VaultManager.enterMode(VaultMode.REAL)
+                    VaultManager.enterSlot(VaultManager.REAL_ID)
                 },
                 onNavigateToPicker = { fid -> navController.navigate("file_picker/${fid.ifEmpty { "root" }}") },
                 onAddLocation = { fid -> navController.navigate("add_location/${fid.ifEmpty { "root" }}") },
@@ -71,21 +70,30 @@ fun AppNavigator(appContainer: AppContainer, mainActivity: MainActivity) {
                 onPreviewFile = { id -> navController.navigate("preview/$id") },
                 onOpenSettings = { navController.navigate("settings") },
                 onEditLocation = { id -> navController.navigate("add_location/root?editId=$id") },
-                onAddPhotoLocation = { fid -> navController.navigate("file_picker_photo/${fid.ifEmpty { "root" }}") }
+                onAddPhotoLocation = { fid -> navController.navigate("file_picker/${fid.ifEmpty { "root" }}?photoPoint=true") },
+                onImportZip = { fid -> navController.navigate("import_zip/${fid.ifEmpty { "root" }}") },
+                onImportFolder = { navController.navigate("import_folder") }
             )
         }
 
-        // Обычный импорт файлов
         composable(
-            route = "file_picker/{folderId}",
-            arguments = listOf(navArgument("folderId") { type = NavType.StringType })
+            route = "file_picker/{folderId}?photoPoint={photoPoint}",
+            arguments = listOf(
+                navArgument("folderId") { type = NavType.StringType },
+                navArgument("photoPoint") {
+                    type = NavType.BoolType
+                    defaultValue = false
+                }
+            )
         ) { entry ->
             val fid = entry.arguments?.getString("folderId") ?: "root"
+            val photoPoint = entry.arguments?.getBoolean("photoPoint") ?: false
             if (PermissionUtils.hasManageExternalStorage()) {
                 FilePickerScreen(
                     appContainer = appContainer,
                     initialPath = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS).absolutePath,
                     folderId = fid.takeIf { it != "root" },
+                    photoLocationMode = photoPoint,
                     onBack = { navController.popBackStack() }
                 )
             } else {
@@ -93,9 +101,8 @@ fun AppNavigator(appContainer: AppContainer, mainActivity: MainActivity) {
             }
         }
 
-        // Режим фото-точки: только изображения + распознавание координат
         composable(
-            route = "file_picker_photo/{folderId}",
+            route = "import_zip/{folderId}",
             arguments = listOf(navArgument("folderId") { type = NavType.StringType })
         ) { entry ->
             val fid = entry.arguments?.getString("folderId") ?: "root"
@@ -104,8 +111,37 @@ fun AppNavigator(appContainer: AppContainer, mainActivity: MainActivity) {
                     appContainer = appContainer,
                     initialPath = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS).absolutePath,
                     folderId = fid.takeIf { it != "root" },
-                    onBack = { navController.popBackStack() },
-                    photoLocationMode = true
+                    importMode = true,
+                    onBack = { navController.popBackStack() }
+                )
+            } else {
+                LaunchedEffect(Unit) { navController.popBackStack() }
+            }
+        }
+
+        composable("import_folder") {
+            if (PermissionUtils.hasManageExternalStorage()) {
+                FilePickerScreen(
+                    appContainer = appContainer,
+                    initialPath = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS).absolutePath,
+                    folderId = null,
+                    importFolderMode = true,
+                    onBack = { navController.popBackStack() }
+                )
+            } else {
+                LaunchedEffect(Unit) { navController.popBackStack() }
+            }
+        }
+
+        composable("pick_folder") {
+            if (PermissionUtils.hasManageExternalStorage()) {
+                FilePickerScreen(
+                    appContainer = appContainer,
+                    initialPath = Environment.getExternalStorageDirectory().absolutePath,
+                    folderId = null,
+                    folderPickerMode = true,
+                    onFolderPicked = { path -> appContainer.setFolderPickerResult(path) },
+                    onBack = { navController.popBackStack() }
                 )
             } else {
                 LaunchedEffect(Unit) { navController.popBackStack() }
@@ -164,6 +200,7 @@ fun AppNavigator(appContainer: AppContainer, mainActivity: MainActivity) {
 
         composable("settings") {
             SettingsScreen(
+                appContainer = appContainer,
                 securePreferences = appContainer.securePreferences,
                 onBack = { navController.popBackStack() },
                 onOpenOfflineMaps = { navController.navigate("offline_maps") },
@@ -171,13 +208,14 @@ fun AppNavigator(appContainer: AppContainer, mainActivity: MainActivity) {
                 onSyncMainPin = { newPin ->
                     appContainer.savePinUseCase(newPin)
                 },
-                onSeedDecoyData = {
-                    CoroutineScope(Dispatchers.IO).launch {
-                        VaultManager.enterMode(VaultMode.DECOY)
-                        DecoySeeder.seedLocationRepository(appContainer.locationRepository)
-                        VaultManager.enterMode(VaultMode.REAL)
+                onSeedSlot = { slotId ->
+                    // ⭐ НЕ меняем currentSlotId — берём репозиторий слота напрямую
+                    withContext(Dispatchers.IO) {
+                        val locRepo = appContainer.locationRepositoryForSlot(slotId)
+                        DecoySeeder.seedLocationRepository(locRepo)
                     }
-                }
+                },
+                onNavigateToPickFolder = { navController.navigate("pick_folder") }
             )
         }
     }
