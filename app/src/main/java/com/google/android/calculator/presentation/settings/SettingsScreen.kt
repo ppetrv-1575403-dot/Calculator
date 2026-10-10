@@ -133,7 +133,7 @@ fun SettingsScreen(
         }
     ) { padding ->
         LazyColumn(
-            Modifier.navigationBarsPadding().fillMaxSize().padding(padding),
+            Modifier.fillMaxSize().padding(padding),
             verticalArrangement = Arrangement.spacedBy(4.dp)
         ) {
             item { SectionTitle("Безопасность") }
@@ -181,7 +181,7 @@ fun SettingsScreen(
                                     append(if (slot.isReal) "Основное • открывается основным PIN" else "Фейковое • открывается своим PIN")
                                     if (VaultManager.containerEnabled(slot.id)) {
                                         append(" • 📦 Контейнер")
-                                        if (VaultManager.isContainerReal(slot.id)) append(" ✓")
+                                        if (VaultManager.isContainerValid(slot.id)) append(" ✓")
                                     }
                                 },
                                 style = MaterialTheme.typography.bodySmall
@@ -277,7 +277,7 @@ private fun ContainerDialog(
     var statusMessage by remember { mutableStateOf<String?>(null) }
 
     val containerFile = VaultManager.containerFile(slot.id)
-    val containerExists = VaultManager.isContainerReal(slot.id)
+    val containerExists = VaultManager.isContainerValid(slot.id)
     val containerSize = containerFile?.takeIf { it.exists() }?.let {
         val bytes = it.length()
         when {
@@ -595,8 +595,9 @@ private fun OriginalActionDialog(
                     OriginalFileAction.DELETE to "Удалять после переноса в хранилище",
                     OriginalFileAction.SHRED to "Затирать (random + zeros) и удалять — безопасно"
                 ).forEach { (action, label) ->
+                    // ⭐ ИСПРАВЛЕНО: теперь используется обычный Row, который корректно импортирован через layout.*
                     Row(
-                        Modifier.fillMaxWidth().clickable { selected = action }.padding(vertical = 4.dp),
+                        modifier = Modifier.fillMaxWidth().clickable { selected = action }.padding(vertical = 4.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         RadioButton(selected = selected == action, onClick = { selected = action })

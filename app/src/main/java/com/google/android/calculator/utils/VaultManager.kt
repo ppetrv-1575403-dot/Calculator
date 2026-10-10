@@ -9,10 +9,6 @@ enum class VaultMode { REAL, DECOY }
 
 data class VaultSlot(val id: String, val label: String, val isReal: Boolean)
 
-/**
- * Управление N хранилищами: реальным + любым числом фейковых.
- * Каждое хранилище = слот со своим PIN и своими файлами (суффикс "_<id>").
- */
 object VaultManager {
     const val REAL_ID = "real"
 
@@ -139,6 +135,7 @@ object VaultManager {
     // === Контейнер ===
 
     fun containerPath(id: String): String? = prefs?.getString(keyContainerPath(id), null)
+    
     fun setContainerPath(id: String, path: String?) =
         prefs?.edit()?.apply {
             if (path == null) remove(keyContainerPath(id)) else putString(keyContainerPath(id), path)
@@ -162,9 +159,10 @@ object VaultManager {
         return File(path, name)
     }
 
-    fun isContainerReal(id: String): Boolean {
-        val f = containerFile(id) ?: return false
-        return f.exists() && f.length() >= 16
+    // ⭐ Проверка: существует ли файл контейнера и имеет ли он минимальный размер
+    fun isContainerValid(id: String): Boolean {
+        val f = containerFile(id)
+        return f != null && f.exists() && f.length() >= 16
     }
 
     private fun defaultContainerName(id: String): String =
@@ -173,10 +171,13 @@ object VaultManager {
     // === Legacy API ===
 
     fun enableDecoy(pin: String) { createDecoySlot(pin, "Фейковое ${decoySlots().size + 1}") }
+    
     fun changeMainPin(old: String, new: String, sync: (String) -> Unit): Boolean =
         changePin(REAL_ID, old, new, sync)
+        
     fun changeDecoyPin(old: String, new: String): Boolean =
         authenticateSlot(old)?.let { if (it.isReal) false else changePin(it.id, old, new) } ?: false
+        
     fun disableDecoy(mainPin: String): Boolean =
         decoySlots().firstOrNull()?.let { deleteSlot(it.id, mainPin) } ?: false
 

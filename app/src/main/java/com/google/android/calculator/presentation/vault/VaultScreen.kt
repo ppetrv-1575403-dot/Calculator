@@ -105,6 +105,20 @@ fun VaultScreen(
     
     LaunchedEffect(Unit) { appContainer.vaultRefresh.collect { viewModel.refresh() } }
 
+    // ⭐ Проверка валидности контейнера при входе
+    val currentSlotId = VaultManager.currentSlotId
+    val isContainerEnabled = remember { VaultManager.containerEnabled(currentSlotId) }
+    val isContainerValid = remember(isContainerEnabled, currentSlotId) {
+        if (isContainerEnabled) VaultManager.isContainerValid(currentSlotId) else true
+    }
+
+    var showMissingContainerDialog by remember { mutableStateOf(!isContainerValid) }
+
+    // ⭐ Очистка кэша при смене слота (например, после успешного ввода PIN)
+    LaunchedEffect(currentSlotId) {
+        appContainer.invalidateCacheForSlot(currentSlotId)
+    }
+
     val exportLauncher = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("*/*")) { uri ->
         appContainer.setFileOperationInProgress(false)
         if (uri != null && viewModel.fileToExport != null) {
@@ -326,6 +340,34 @@ fun VaultScreen(
                 }
             }
         }
+    }
+
+    // ⭐ Диалог, если файл контейнера не найден (был перемещен или удален)
+    if (showMissingContainerDialog) {
+        AlertDialog(
+            onDismissRequest = { /* Не даем закрыть, пока не решат проблему */ },
+            title = { Text("Контейнер не найден") },
+            text = { 
+                Text("Файл хранилища был перемещен или удален.\nПожалуйста, укажите новый путь к файлу или отключите использование контейнера в настройках.") 
+            },
+            confirmButton = {
+                TextButton(onClick = { 
+                    showMissingContainerDialog = false
+                    onOpenSettings() 
+                }) { 
+                    Text("В настройки") 
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = {
+                    VaultManager.setContainerEnabled(currentSlotId, false)
+                    showMissingContainerDialog = false
+                    appContainer.invalidateCacheForSlot(currentSlotId)
+                }) { 
+                    Text("Отключить контейнер") 
+                }
+            }
+        )
     }
 
     // === Диалог подтверждения экспорта папки ===

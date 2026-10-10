@@ -8,13 +8,8 @@ import java.io.File
 import java.io.InputStream
 import java.io.OutputStream
 import java.io.RandomAccessFile
-import java.nio.charset.Charset
 import java.nio.charset.StandardCharsets
 
-/**
- * Файл-контейнер зашифрованного хранилища (эмуляция диска).
- * Один файл содержит все данные: зашифрованные блоки файлов + зашифрованный индекс.
- */
 class VaultContainer(
     private val containerFile: File,
     private val crypto: CryptoManager
@@ -30,6 +25,7 @@ class VaultContainer(
 
     private val mutex = Mutex()
     private var index = mutableListOf<Entry>()
+    private var lastKnownModified: Long = 0L // ⭐ Отслеживание времени изменения файла
 
     companion object {
         private const val MAGIC = "CVLT"
@@ -52,19 +48,26 @@ class VaultContainer(
         }
         index = mutableListOf()
         appendIndex()
+        lastKnownModified = containerFile.lastModified()
     }
 
     fun open() {
-        RandomAccessFile(containerFile, "r").use { raf ->
-            val magic = ByteArray(4); raf.readFully(magic)
-            require(String(magic) == MAGIC) { "Файл не является контейнером хранилища" }
-            val version = raf.readInt()
-            require(version == VERSION) { "Неподдерживаемая версия контейнера: $version" }
-            val indexOffset = raf.readLong()
-            raf.seek(indexOffset)
-            val len = raf.readLong()
-            val enc = ByteArray(len.toInt()); raf.readFully(enc)
-            index = decryptIndex(enc).toMutableList()
+        val currentModified = containerFile.lastModified()
+        // ⭐ Перечитываем индекс только если файл был изменен или индекс пуст
+        if (currentModified != lastKnownModified || index.isEmpty()) {
+            RandomAccessFile(containerFile, "r").use { raf ->
+                val magic = ByteArray(4); raf.readFully(magic)
+                require(String(magic) == MAGIC) { "Файл не является контейнером хранилища" }
+                val version = raf.readInt()
+                require(version == VERSION) { "Неподдерживаемая версия контейнера: $version" }
+                val indexOffset = raf.readLong()
+                raf.seek(indexOffset)
+                val len = raf.readLong()
+                val enc = ByteArray(len.toInt()); raf.readFully(enc)
+                index = decryptIndex(enc).toMutableList()
+                
+                lastKnownModified = currentModified // ⭐ Обновляем известное время
+            }
         }
     }
 
@@ -223,11 +226,10 @@ class VaultContainer(
             }
             containerFile.delete()
             tmp.renameTo(containerFile)
+            lastKnownModified = containerFile.lastModified() // ⭐ Обновляем время после compact
             Result.success(Unit)
         } catch (e: Exception) { Result.failure(e) }
     }
-
-    // === Внутреннее ===
 
     private fun appendIndex() {
         val enc = encryptIndex(index)
@@ -239,6 +241,7 @@ class VaultContainer(
             raf.seek(8)
             raf.writeLong(off)
         }
+        lastKnownModified = containerFile.lastModified()
     }
 
     private fun encryptIndex(entries: List<Entry>): ByteArray {
@@ -268,19 +271,16 @@ class VaultContainer(
     }
 }
 
-/** InputStream, читающий из RandomAccessFile с текущей позиции */
 private class RafInputStream(private val raf: RandomAccessFile) : InputStream() {
     override fun read(): Int = raf.read()
     override fun read(b: ByteArray, off: Int, len: Int): Int = raf.read(b, off, len)
 }
 
-/** OutputStream, пишущий в RandomAccessFile с текущей позиции */
 private class RafOutputStream(private val raf: RandomAccessFile) : OutputStream() {
     override fun write(b: Int) { raf.write(b) }
     override fun write(b: ByteArray, off: Int, len: Int) { raf.write(b, off, len) }
 }
 
-/** InputStream, ограничивающий чтение ровно N байтами */
 private class BoundedInputStream(private val src: InputStream, private var remaining: Long) : InputStream() {
     override fun read(): Int {
         if (remaining <= 0) return -1
