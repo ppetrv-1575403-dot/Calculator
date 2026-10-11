@@ -1,6 +1,5 @@
 package com.google.android.calculator.presentation.vault
 
-import android.net.Uri
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
@@ -63,25 +62,71 @@ class VaultViewModel(
     }
 
     fun createFolder(name: String) {
-        viewModelScope.launch { appContainer.folderRepository.addFolder(name, currentFolder?.id); loadItems() }
+        viewModelScope.launch { 
+            appContainer.folderRepository.addFolder(name, currentFolder?.id)
+            loadItems() 
+        }
     }
 
+    // ⭐ ПОЛНОСТЬЮ ПЕРЕПИСАННЫЙ МЕТОД УДАЛЕНИЯ
     fun deleteFolder(folder: VaultFolder) {
         viewModelScope.launch {
-            appContainer.folderRepository.reparentSubfolders(folder.id, folder.parentId)
-            repository.moveFilesToFolder(folder.id, folder.parentId)
-            appContainer.locationRepository.moveLocationsToFolder(folder.id, folder.parentId)
-            appContainer.folderRepository.deleteFolder(folder.id)
-            loadItems()
+            // 1. Собираем ID текущей папки и всех её вложенных подпапок (рекурсивно)
+            val allFolders = appContainer.folderRepository.getFolders()
+            val foldersToDeleteIds = mutableListOf(folder.id)
+            
+            fun collectSubfolders(parentId: String) {
+                val children = allFolders.filter { it.parentId == parentId }
+                children.forEach { child ->
+                    foldersToDeleteIds.add(child.id)
+                    collectSubfolders(child.id)
+                }
+            }
+            collectSubfolders(folder.id)
+
+            // 2. Находим все файлы и локации, принадлежащие этим папкам
+            val allFiles = getFilesUseCase()
+            val filesToDelete = allFiles.filter { it.folderId in foldersToDeleteIds }
+
+            val allLocations = appContainer.locationRepository.getLocations()
+            val locationsToDelete = allLocations.filter { it.folderId in foldersToDeleteIds }
+
+            // 3. Удаляем файлы (это также удалит их физические зашифрованные копии через репозиторий)
+            filesToDelete.forEach { file ->
+                repository.deleteFile(file.id)
+            }
+
+            // 4. Удаляем локации (точки)
+            locationsToDelete.forEach { location ->
+                appContainer.locationRepository.deleteLocation(location.id)
+            }
+
+            // 5. Удаляем сами папки из метаданных
+            foldersToDeleteIds.forEach { folderId ->
+                appContainer.folderRepository.deleteFolder(folderId)
+            }
+
+            // 6. UX: Если мы удалили папку, в которой сейчас находимся, поднимаемся на уровень выше
+            if (currentFolder?.id == folder.id) {
+                navigateUpFolder()
+            } else {
+                loadItems()
+            }
         }
     }
 
     fun deleteFile(file: VaultFile) {
-        viewModelScope.launch { repository.deleteFile(file.id); loadItems() }
+        viewModelScope.launch { 
+            repository.deleteFile(file.id)
+            loadItems() 
+        }
     }
 
     fun deleteLocation(id: String) {
-        viewModelScope.launch { appContainer.locationRepository.deleteLocation(id); loadItems() }
+        viewModelScope.launch { 
+            appContainer.locationRepository.deleteLocation(id)
+            loadItems() 
+        }
     }
 
     fun prepareExport(file: VaultFile) {
@@ -108,7 +153,7 @@ class VaultViewModel(
             when (item) {
                 is VaultItem.FileItem -> repository.moveFileToFolder(item.file.id, folder?.id)
                 is VaultItem.LocationItem -> appContainer.locationRepository.moveLocationToFolder(item.location.id, folder?.id)
-                is VaultItem.FolderItem -> { }
+                is VaultItem.FolderItem -> { } // Перемещение папок пока не реализовано в UI
             }
             itemToMove = null
             loadItems()
