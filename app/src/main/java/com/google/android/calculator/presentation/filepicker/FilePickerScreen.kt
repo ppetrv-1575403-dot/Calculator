@@ -268,36 +268,48 @@ fun FilePickerScreen(
                             }
                         }
                         importFolderMode -> {
-                            TextButton(
-                                onClick = {
-                                    isImportingFolder = true
-                                    scope.launch {
-                                        val count = FolderExporter.importFolderFromPath(
-                                            sourcePath = currentPath,
-                                            targetFolderId = folderId,
-                                            vaultRepository = appContainer.vaultRepository,
-                                            folderRepository = appContainer.folderRepository
-                                        )
-                                        withContext(Dispatchers.Main) {
-                                            Toast.makeText(
-                                                context,
-                                                "✅ Импортировано файлов: $count",
-                                                Toast.LENGTH_LONG
-                                            ).show()
-                                            appContainer.requestVaultRefresh()
+                            Row {
+                                IconButton(
+                                    onClick = {
+                                        isImportingFolder = true
+                                        scope.launch {
+                                            val count = FolderExporter.importFolderFromPath(
+                                                sourcePath = currentPath,
+                                                targetFolderId = folderId,
+                                                vaultRepository = appContainer.vaultRepository,
+                                                folderRepository = appContainer.folderRepository
+                                            )
+                                            withContext(Dispatchers.Main) {
+                                                Toast.makeText(
+                                                    context,
+                                                    "✅ Импортировано файлов: $count",
+                                                    Toast.LENGTH_LONG
+                                                ).show()
+                                                appContainer.requestVaultRefresh()
+                                            }
+                                            isImportingFolder = false
+                                            onBack()
                                         }
-                                        isImportingFolder = false
-                                        onBack()
-                                    }
-                                },
-                                enabled = !isImportingFolder
-                            ) {
-                                Icon(Icons.Default.Download, null, Modifier.size(18.dp))
-                                Spacer(Modifier.width(4.dp))
-                                Text("Импортировать эту папку")
+                                    },
+                                    enabled = !isImportingFolder
+                                ) {
+                                    Icon(
+                                        Icons.Default.Download,
+                                        "Импортировать эту папку",
+                                        tint = MaterialTheme.colorScheme.primary
+                                    )
+                                }
+                                IconButton(onClick = onBack) {
+                                    Icon(Icons.Default.Close, "Закрыть")
+                                }
                             }
                         }
-                        !importMode -> {
+                        importMode -> {
+                            IconButton(onClick = onBack) {
+                                Icon(Icons.Default.Close, "Закрыть")
+                            }
+                        }
+                        else -> {
                             IconButton(
                                 onClick = { viewMode = if (viewMode == ViewMode.LIST) ViewMode.GALLERY else ViewMode.LIST },
                                 enabled = !isProcessing
@@ -416,17 +428,13 @@ fun FilePickerScreen(
                 }
             }
 
+            // ⭐ Основной контент — без центрирования загрузки/пустоты
             Box(Modifier.weight(1f)) {
                 when {
-                    isLoading -> CircularProgressIndicator(Modifier.align(Alignment.Center))
-                    displayFiles.isEmpty() -> Text(
-                        when {
-                            importMode -> "Нет ZIP-файлов в этой папке и подпапках"
-                            isSearchMode -> "Ничего не найдено в этой папке и подпапках"
-                            else -> "Папка пуста"
-                        },
-                        Modifier.align(Alignment.Center).padding(16.dp)
-                    )
+                    // Загрузка больше не показывается здесь — только в нижней панели
+                    displayFiles.isEmpty() && !isLoading -> {
+                        // Пустой список тоже не показываем здесь — только в нижней панели
+                    }
                     viewMode == ViewMode.LIST -> {
                         LazyColumn(
                             contentPadding = PaddingValues(16.dp),
@@ -520,8 +528,8 @@ fun FilePickerScreen(
                         }
                     }
                 }
-                
-                // ⭐ Центрированный прогресс с полупрозрачным фоном
+
+                // Прогресс обработки (шифрование/импорт) остается по центру
                 if (isProcessing || isImportingFolder) {
                     Box(
                         modifier = Modifier
@@ -546,44 +554,122 @@ fun FilePickerScreen(
                 }
             }
 
-            // ⭐ Нижняя панель со счётчиком для режимов поиска
-            if (isSearchMode) {
-                Surface(
-                    modifier = Modifier.fillMaxWidth(),
-                    tonalElevation = 2.dp,
-                    shadowElevation = 4.dp,
-                    color = MaterialTheme.colorScheme.surface.copy(alpha = 0.95f)
-                ) {
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = 16.dp, vertical = 10.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Icon(
-                            Icons.Default.Search, null,
-                            modifier = Modifier.size(16.dp),
-                            tint = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                        Spacer(Modifier.width(8.dp))
-                        val countLabel = when (filter) {
-                            FileFilter.IMAGES -> "фото"
-                            FileFilter.DOCUMENTS -> "документов"
-                            FileFilter.ZIP -> "архивов"
-                            FileFilter.ALL -> "файлов"
-                        }
-                        Text(
-                            if (isLoading) "Поиск..."
-                            else "Найдено: ${displayFiles.size} $countLabel • включая подпапки",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
-                }
-            }
+            // ⭐ Единая нижняя панель с загрузкой, пустотой и статусами
+            BottomStatusPanel(
+                isLoading = isLoading,
+                isEmpty = displayFiles.isEmpty() && !isLoading,
+                isSearchMode = isSearchMode,
+                selectionMode = selectionMode,
+                selectedCount = selectedPaths.size,
+                fileCount = displayFiles.size,
+                filter = filter,
+                importFolderMode = importFolderMode,
+                folderPickerMode = folderPickerMode,
+                importMode = importMode
+            )
         }
     }
 }
+
+// ==================== Единая нижняя панель статусов ====================
+
+@Composable
+private fun BottomStatusPanel(
+    isLoading: Boolean,
+    isEmpty: Boolean,
+    isSearchMode: Boolean,
+    selectionMode: Boolean,
+    selectedCount: Int,
+    fileCount: Int,
+    filter: FileFilter,
+    importFolderMode: Boolean,
+    folderPickerMode: Boolean,
+    importMode: Boolean
+) {
+    // Приоритет статусов: загрузка > пусто > выбор > импорт > поиск > обычный
+    val (icon, text, showProgress) = when {
+        isLoading -> Triple(Icons.Default.Search, "Загрузка...", true)
+        isEmpty -> {
+            val msg = when {
+                importMode -> "Нет ZIP-файлов в этой папке и подпапках"
+                isSearchMode -> "Ничего не найдено в этой папке и подпапках"
+                else -> "Папка пуста"
+            }
+            Triple(Icons.Default.Info, msg, false)
+        }
+        selectionMode -> Triple(
+            Icons.Default.Checklist,
+            "Выбрано: $selectedCount • Нажмите ➕ для добавления",
+            false
+        )
+        importFolderMode -> Triple(
+            Icons.Default.Folder,
+            "Файлов в папке: $fileCount • Нажмите 📥 для импорта",
+            false
+        )
+        folderPickerMode -> Triple(
+            Icons.Default.Folder,
+            "Нажмите ✓, чтобы выбрать эту папку",
+            false
+        )
+        isSearchMode -> {
+            val label = when (filter) {
+                FileFilter.IMAGES -> "фото"
+                FileFilter.DOCUMENTS -> "документов"
+                FileFilter.ZIP -> "архивов"
+                FileFilter.ALL -> "файлов"
+            }
+            Triple(
+                Icons.Default.Search,
+                "Найдено: $fileCount $label • включая подпапки",
+                false
+            )
+        }
+        else -> Triple(Icons.Default.Folder, "Файлов: $fileCount", false)
+    }
+
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        tonalElevation = 2.dp,
+        shadowElevation = 4.dp,
+        color = MaterialTheme.colorScheme.surface.copy(alpha = 0.95f)
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp, vertical = 10.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            if (showProgress) {
+                CircularProgressIndicator(
+                    modifier = Modifier.size(16.dp),
+                    strokeWidth = 2.dp,
+                    color = if (selectionMode) MaterialTheme.colorScheme.primary
+                    else MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            } else {
+                Icon(
+                    icon, null,
+                    modifier = Modifier.size(16.dp),
+                    tint = if (selectionMode) MaterialTheme.colorScheme.primary
+                    else MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+            Spacer(Modifier.width(8.dp))
+            Text(
+                text,
+                style = MaterialTheme.typography.bodySmall,
+                color = if (selectionMode) MaterialTheme.colorScheme.primary
+                else MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f)
+            )
+        }
+    }
+}
+
+// ==================== Остальные функции (без изменений) ====================
 
 private fun relativePath(basePath: String, filePath: String): String {
     val rel = filePath.removePrefix(basePath).trimStart('/')

@@ -23,6 +23,7 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.Lifecycle
@@ -105,7 +106,6 @@ fun VaultScreen(
     
     LaunchedEffect(Unit) { appContainer.vaultRefresh.collect { viewModel.refresh() } }
 
-    // ⭐ Проверка валидности контейнера при входе
     val currentSlotId = VaultManager.currentSlotId
     val isContainerEnabled = remember { VaultManager.containerEnabled(currentSlotId) }
     val isContainerValid = remember(isContainerEnabled, currentSlotId) {
@@ -114,7 +114,6 @@ fun VaultScreen(
 
     var showMissingContainerDialog by remember { mutableStateOf(!isContainerValid) }
 
-    // ⭐ Очистка кэша при смене слота (например, после успешного ввода PIN)
     LaunchedEffect(currentSlotId) {
         appContainer.invalidateCacheForSlot(currentSlotId)
     }
@@ -342,10 +341,10 @@ fun VaultScreen(
         }
     }
 
-    // ⭐ Диалог, если файл контейнера не найден (был перемещен или удален)
+    // ⭐ Диалог, если файл контейнера не найден
     if (showMissingContainerDialog) {
         AlertDialog(
-            onDismissRequest = { /* Не даем закрыть, пока не решат проблему */ },
+            onDismissRequest = { },
             title = { Text("Контейнер не найден") },
             text = { 
                 Text("Файл хранилища был перемещен или удален.\nПожалуйста, укажите новый путь к файлу или отключите использование контейнера в настройках.") 
@@ -408,12 +407,16 @@ fun VaultScreen(
     if (isExporting) {
         AlertDialog(
             onDismissRequest = { },
-            title = { Text("Экспорт...") },
+            title = { Text("Экспорт папки") },
             text = {
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
                     CircularProgressIndicator()
                     Spacer(Modifier.height(16.dp))
-                    Text("Расшифровка и упаковка файлов")
+                    Text(
+                        "Экспортируется, пожалуйста, подождите...\nЭто может занять некоторое время для больших файлов.",
+                        textAlign = TextAlign.Center,
+                        style = MaterialTheme.typography.bodyMedium
+                    )
                 }
             },
             confirmButton = { }
