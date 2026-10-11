@@ -4,13 +4,14 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.lifecycle.ViewModel
+import com.google.android.calculator.di.AppContainer
 import com.google.android.calculator.domain.usecase.CheckPinUseCase
 import com.google.android.calculator.utils.FileLogger
 import com.google.android.calculator.utils.VaultManager
 import com.google.android.calculator.utils.VaultMode
 
 class CalculatorViewModel(
-    private val checkPinUseCase: CheckPinUseCase,
+    private val appContainer: AppContainer,
     private val onVaultOpened: () -> Unit
 ) : ViewModel() {
 
@@ -90,21 +91,30 @@ class CalculatorViewModel(
         if (display.isEmpty()) { pinHintVisible = true; return }
         val entered = display.trim()
 
-        val mode = VaultManager.authenticate(entered)
-        if (mode != null) {
-            FileLogger.i("Vault", "Unlock via VaultManager: mode=$mode")
-            VaultManager.enterMode(mode)
+        // ⭐ 1. Пытаемся найти КОНКРЕТНЫЙ слот по PIN (основной или любой фейковый)
+        val slot = VaultManager.authenticateSlot(entered)
+        if (slot != null) {
+            FileLogger.i("Vault", "Unlock successful: slotId=${slot.id}, label=${slot.label}")
+            
+            // ⭐ 2. Переключаемся именно на этот слот
+            VaultManager.enterSlot(slot.id)
+            
+            // ⭐ 3. Очищаем кэш репозиториев, чтобы загрузились данные именно этого контейнера
+            appContainer.invalidateCacheForSlot(slot.id)
+            
             onVaultOpened()
             onClear()
             return
         }
 
-        if (checkPinUseCase(entered)) {
+        // ⭐ 4. Fallback: проверка старого основного PIN (для совместимости)
+        if (appContainer.checkPinUseCase(entered)) {
             if (!VaultManager.hasMainPin()) {
                 VaultManager.setMainPin(entered)
                 FileLogger.i("Vault", "Main PIN migrated from PinRepository")
             }
-            VaultManager.enterMode(VaultMode.REAL)
+            VaultManager.enterSlot(VaultManager.REAL_ID)
+            appContainer.invalidateCacheForSlot(VaultManager.REAL_ID)
             onVaultOpened()
             onClear()
         } else {

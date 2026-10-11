@@ -29,7 +29,7 @@ import com.google.android.calculator.di.AppContainer
 @Composable
 fun CalculatorScreen(appContainer: AppContainer, onNavigateToVault: () -> Unit) {
     val viewModel = remember {
-        CalculatorViewModel(appContainer.checkPinUseCase, onNavigateToVault)
+        CalculatorViewModel(appContainer, onNavigateToVault)
     }
 
     // === Палитра в стиле Google Calculator ===
