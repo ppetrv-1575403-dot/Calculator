@@ -565,7 +565,8 @@ fun FilePickerScreen(
                 filter = filter,
                 importFolderMode = importFolderMode,
                 folderPickerMode = folderPickerMode,
-                importMode = importMode
+                importMode = importMode,
+                isImporting = isImportingFolder  // ⭐ новый параметр
             )
         }
     }
@@ -584,10 +585,11 @@ private fun BottomStatusPanel(
     filter: FileFilter,
     importFolderMode: Boolean,
     folderPickerMode: Boolean,
-    importMode: Boolean
+    importMode: Boolean,
+    isImporting: Boolean = false  // ⭐ новый параметр
 ) {
-    // Приоритет статусов: загрузка > пусто > выбор > импорт > поиск > обычный
     val (icon, text, showProgress) = when {
+        isImporting -> Triple(Icons.Default.Download, "Импортируется, пожалуйста, подождите...", true)
         isLoading -> Triple(Icons.Default.Search, "Загрузка...", true)
         isEmpty -> {
             val msg = when {
@@ -644,7 +646,7 @@ private fun BottomStatusPanel(
                 CircularProgressIndicator(
                     modifier = Modifier.size(16.dp),
                     strokeWidth = 2.dp,
-                    color = if (selectionMode) MaterialTheme.colorScheme.primary
+                    color = if (selectionMode || isImporting) MaterialTheme.colorScheme.primary
                     else MaterialTheme.colorScheme.onSurfaceVariant
                 )
             } else {
@@ -659,7 +661,7 @@ private fun BottomStatusPanel(
             Text(
                 text,
                 style = MaterialTheme.typography.bodySmall,
-                color = if (selectionMode) MaterialTheme.colorScheme.primary
+                color = if (selectionMode || isImporting) MaterialTheme.colorScheme.primary
                 else MaterialTheme.colorScheme.onSurfaceVariant,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,

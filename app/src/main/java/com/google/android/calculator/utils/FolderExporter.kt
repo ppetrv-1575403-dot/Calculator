@@ -15,16 +15,8 @@ import java.util.zip.ZipEntry
 import java.util.zip.ZipInputStream
 import java.util.zip.ZipOutputStream
 
-/**
- * Экспорт и импорт папок хранилища с сохранением структуры.
- * Формат ZIP: каждая папка — директория, файлы — с расшифрованным содержимым.
- */
 object FolderExporter {
 
-    /**
-     * Экспорт папки со всем содержимым в ZIP-файл.
-     * @return Uri созданного файла в Downloads
-     */
     suspend fun exportFolder(
         context: Context,
         folder: VaultFolder,
@@ -100,11 +92,6 @@ object FolderExporter {
         }
     }
 
-    /**
-     * Импорт ZIP-архива в хранилище с воссозданием структуры папок.
-     * @param targetFolderId ID папки, куда импортировать (null = корень)
-     * @return количество импортированных файлов
-     */
     suspend fun importFolder(
         context: Context,
         zipUri: Uri,
@@ -168,6 +155,8 @@ object FolderExporter {
 
     /**
      * Импорт обычной папки с диска (без ZIP) с воссозданием структуры подпапок.
+     * Создаёт в хранилище папку с именем sourceDir и импортирует всё содержимое внутрь.
+     *
      * @param sourcePath абсолютный путь к папке на устройстве
      * @param targetFolderId ID папки в хранилище, куда импортировать (null = корень)
      * @return количество импортированных файлов
@@ -178,12 +167,24 @@ object FolderExporter {
         vaultRepository: VaultRepository,
         folderRepository: FolderRepository
     ): Int = withContext(Dispatchers.IO) {
-        var importedCount = 0
-        val folderIdMap = mutableMapOf<String, String>()
-        folderIdMap[""] = targetFolderId ?: ""
-
         val sourceDir = File(sourcePath)
         if (!sourceDir.exists() || !sourceDir.isDirectory) return@withContext 0
+
+        // ⭐ Создаём папку с именем sourceDir в targetFolderId
+        val rootFolderId = try {
+            folderRepository.addFolder(sourceDir.name, targetFolderId)
+            // Находим созданную папку
+            val folders = folderRepository.getFolders()
+            folders.find { it.name == sourceDir.name && it.parentId == targetFolderId }?.id
+                ?: targetFolderId
+        } catch (e: Exception) {
+            FileLogger.e("FolderExporter", "Failed to create root folder: ${sourceDir.name}", e)
+            targetFolderId
+        }
+
+        var importedCount = 0
+        val folderIdMap = mutableMapOf<String, String>()
+        folderIdMap[""] = rootFolderId ?: ""
 
         val allFiles = mutableListOf<Pair<File, String>>()
         collectDiskFiles(sourceDir, "", allFiles)
@@ -193,7 +194,7 @@ object FolderExporter {
                 relativeDir,
                 folderIdMap,
                 folderRepository,
-                targetFolderId
+                rootFolderId
             )
 
             val mimeType = guessMimeType(file.name)
