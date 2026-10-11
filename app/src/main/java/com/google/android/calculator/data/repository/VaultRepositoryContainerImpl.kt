@@ -6,16 +6,13 @@ import com.google.android.calculator.data.container.VaultContainer
 import com.google.android.calculator.domain.model.VaultFile
 import com.google.android.calculator.domain.repository.VaultRepository
 import com.google.android.calculator.utils.FileLogger
+import com.google.android.calculator.utils.VaultManager
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import java.io.File
 
-/**
- * VaultRepository поверх файла-контейнера (один файл хранит всё хранилище).
- * Используется, когда для слота включён режим контейнера.
- */
 class VaultRepositoryContainerImpl(
     private val context: Context,
     private val container: VaultContainer
@@ -23,12 +20,15 @@ class VaultRepositoryContainerImpl(
 
     private val mutex = Mutex()
 
+    private fun password(): String =
+        VaultManager.activeSessionPin ?: throw IllegalStateException("Хранилище заблокировано")
+
     override suspend fun getFiles(): List<VaultFile> = mutex.withLock {
         container.listEntries().map { e ->
             VaultFile(
                 id = e.id,
                 originalName = e.originalName,
-                encryptedFileName = e.id, // в контейнер-режиме id == ключ записи
+                encryptedFileName = e.id,
                 mimeType = e.mime,
                 folderId = e.folderId
             )
@@ -56,6 +56,7 @@ class VaultRepositoryContainerImpl(
         folderId: String?
     ): Result<String> = mutex.withLock {
         try {
+            val pin = password()
             val id = System.currentTimeMillis().toString() + "_" + (System.nanoTime() % 1_000_000)
             val temp = File.createTempFile("vault_in_", ".tmp", context.cacheDir)
             try {
@@ -63,7 +64,7 @@ class VaultRepositoryContainerImpl(
                     temp.outputStream().use { out -> ins.copyTo(out) }
                 } ?: return@withLock Result.failure(Exception("Cannot open file"))
 
-                container.putEntry(id, originalName, mimeType, folderId, temp).getOrThrow()
+                container.putEntry(id, originalName, mimeType, folderId, temp, pin).getOrThrow()
                 Result.success(id)
             } finally {
                 temp.delete()
@@ -76,7 +77,7 @@ class VaultRepositoryContainerImpl(
 
     override suspend fun deleteFile(fileId: String): Result<Unit> = mutex.withLock {
         try {
-            container.removeEntry(fileId)
+            container.removeEntry(fileId, password())
         } catch (e: Exception) {
             FileLogger.e("VaultContainerRepo", "deleteFile failed", e)
             Result.failure(e)
@@ -84,22 +85,23 @@ class VaultRepositoryContainerImpl(
     }
 
     override suspend fun decryptToTempFile(encryptedFileName: String): File? = withContext(Dispatchers.IO) {
-        val outFile = File.createTempFile("vault_out_", ".tmp", context.cacheDir)
         try {
-            container.getEntry(encryptedFileName, outFile).getOrThrow()
+            val pin = password()
+            val outFile = File.createTempFile("vault_out_", ".tmp", context.cacheDir)
+            container.getEntry(encryptedFileName, outFile, pin).getOrThrow()
             outFile
         } catch (e: Exception) {
             FileLogger.e("VaultContainerRepo", "decryptToTempFile failed", e)
-            outFile.delete()
             null
         }
     }
 
     override suspend fun moveFilesToFolder(fromFolderId: String, toFolderId: String?): Result<Unit> = mutex.withLock {
         try {
+            val pin = password()
             val entries = container.listEntries()
             entries.filter { it.folderId == fromFolderId }.forEach {
-                container.moveEntry(it.id, toFolderId)
+                container.moveEntry(it.id, toFolderId, pin)
             }
             Result.success(Unit)
         } catch (e: Exception) {
@@ -110,7 +112,7 @@ class VaultRepositoryContainerImpl(
 
     override suspend fun moveFileToFolder(fileId: String, targetFolderId: String?): Result<Unit> = mutex.withLock {
         try {
-            container.moveEntry(fileId, targetFolderId)
+            container.moveEntry(fileId, targetFolderId, password())
         } catch (e: Exception) {
             FileLogger.e("VaultContainerRepo", "moveFileToFolder failed", e)
             Result.failure(e)

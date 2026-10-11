@@ -1,54 +1,50 @@
 package com.google.android.calculator.data.crypto
 
-import android.content.Context
-import android.security.keystore.KeyGenParameterSpec
-import android.security.keystore.KeyProperties
 import java.io.File
 import java.io.InputStream
 import java.io.OutputStream
-import java.security.KeyStore
+import java.security.SecureRandom
+import java.security.spec.KeySpec
 import javax.crypto.Cipher
 import javax.crypto.CipherInputStream
 import javax.crypto.CipherOutputStream
-import javax.crypto.KeyGenerator
 import javax.crypto.SecretKey
+import javax.crypto.SecretKeyFactory
 import javax.crypto.spec.GCMParameterSpec
+import javax.crypto.spec.PBEKeySpec
+import javax.crypto.spec.SecretKeySpec
 
-class CryptoManager(private val context: Context) {
+object CryptoManager {
+    private const val ALGORITHM = "PBKDF2WithHmacSHA256"
+    private const val CIPHER_TRANSFORMATION = "AES/GCM/NoPadding"
+    private const val ITERATIONS = 300_000
+    private const val KEY_SIZE = 256
+    private const val SALT_SIZE = 16
+    private const val IV_SIZE = 12
+    private const val TAG_LENGTH_BIT = 128
 
-    private val keyStore = KeyStore.getInstance(KEYSTORE_PROVIDER).apply { load(null) }
-
-    private val key: SecretKey
-        get() {
-            if (!keyStore.containsAlias(KEY_ALIAS)) {
-                generateKey()
-            }
-            return keyStore.getKey(KEY_ALIAS, null) as SecretKey
-        }
-
-    private fun generateKey() {
-        val keyGenerator = KeyGenerator.getInstance(
-            KeyProperties.KEY_ALGORITHM_AES,
-            KEYSTORE_PROVIDER
-        )
-        val spec = KeyGenParameterSpec.Builder(
-            KEY_ALIAS,
-            KeyProperties.PURPOSE_ENCRYPT or KeyProperties.PURPOSE_DECRYPT
-        )
-            .setBlockModes(KeyProperties.BLOCK_MODE_GCM)
-            .setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_NONE)
-            .setKeySize(256)
-            .build()
-        keyGenerator.init(spec)
-        keyGenerator.generateKey()
+    fun generateSalt(): ByteArray {
+        val salt = ByteArray(SALT_SIZE)
+        SecureRandom().nextBytes(salt)
+        return salt
     }
 
-    // === File → File (оригинал) ===
+    fun deriveKey(password: String, salt: ByteArray): SecretKey {
+        val spec: KeySpec = PBEKeySpec(password.toCharArray(), salt, ITERATIONS, KEY_SIZE)
+        val factory = SecretKeyFactory.getInstance(ALGORITHM)
+        val keyBytes = factory.generateSecret(spec).encoded
+        return SecretKeySpec(keyBytes, "AES")
+    }
 
-    fun encrypt(input: File, output: File) {
-        val cipher = Cipher.getInstance(TRANSFORMATION)
+    // ⭐ УДОБНЫЕ МЕТОДЫ ДЛЯ ОТДЕЛЬНЫХ ФАЙЛОВ (соль хранится внутри файла)
+    fun encrypt(input: File, output: File, password: String) {
+        val salt = generateSalt()
+        val key = deriveKey(password, salt)
+        val cipher = Cipher.getInstance(CIPHER_TRANSFORMATION)
         cipher.init(Cipher.ENCRYPT_MODE, key)
+
         output.outputStream().use { outs ->
+            outs.write(salt) // Записываем соль в начало файла
             outs.write(cipher.iv)
             CipherOutputStream(outs, cipher).use { cipherOut ->
                 input.inputStream().use { it.copyTo(cipherOut) }
@@ -56,91 +52,68 @@ class CryptoManager(private val context: Context) {
         }
     }
 
-    fun decrypt(input: File, output: File) {
+    fun decrypt(input: File, output: File, password: String) {
         input.inputStream().use { ins ->
-            val iv = ByteArray(12)
-            if (ins.read(iv) != 12) throw IllegalStateException("Invalid encrypted file")
-            val cipher = Cipher.getInstance(TRANSFORMATION)
-            cipher.init(Cipher.DECRYPT_MODE, key, GCMParameterSpec(128, iv))
+            val salt = ByteArray(SALT_SIZE)
+            if (ins.read(salt) != SALT_SIZE) throw IllegalStateException("Invalid file: no salt")
+            
+            val iv = ByteArray(IV_SIZE)
+            if (ins.read(iv) != IV_SIZE) throw IllegalStateException("Invalid file: no IV")
+
+            val key = deriveKey(password, salt)
+            val cipher = Cipher.getInstance(CIPHER_TRANSFORMATION)
+            cipher.init(Cipher.DECRYPT_MODE, key, GCMParameterSpec(TAG_LENGTH_BIT, iv))
+
             CipherOutputStream(output.outputStream(), cipher).use { cipherOut ->
                 ins.copyTo(cipherOut)
             }
         }
     }
 
-    // === Stream-API (для RAM-only чтения) ===
+    // === Stream API (для контейнера, где соль управляется внешне) ===
 
-    /**
-     * Возвращает OutputStream, который шифрует всё записываемое и пишет в baseStream.
-     * Первым байтом запишет 12-байтовый IV, поэтому baseStream должен быть доступен
-     * для начала записи. Обязательно close() по окончании (иначе GCM-тег не запишется).
-     */
-    fun encryptStream(baseStream: OutputStream): OutputStream {
-        val cipher = Cipher.getInstance(TRANSFORMATION)
+    fun encryptStream(baseStream: OutputStream, password: String, salt: ByteArray): OutputStream {
+        val key = deriveKey(password, salt)
+        val cipher = Cipher.getInstance(CIPHER_TRANSFORMATION)
         cipher.init(Cipher.ENCRYPT_MODE, key)
         baseStream.write(cipher.iv)
         return CipherOutputStream(baseStream, cipher)
     }
 
-    /**
-     * Возвращает InputStream, который читает шифротекст из baseStream и отдаёт plaintext.
-     * Читает IV первым делом. Обязательно close() по окончании.
-     */
-    fun decryptStream(baseStream: InputStream): InputStream {
-        val iv = ByteArray(12)
+    fun decryptStream(baseStream: InputStream, password: String, salt: ByteArray): InputStream {
+        val iv = ByteArray(IV_SIZE)
         var read = 0
-        while (read < 12) {
-            val n = baseStream.read(iv, read, 12 - read)
+        while (read < IV_SIZE) {
+            val n = baseStream.read(iv, read, IV_SIZE - read)
             if (n < 0) throw IllegalStateException("Invalid encrypted stream: no IV")
             read += n
         }
-        val cipher = Cipher.getInstance(TRANSFORMATION)
-        cipher.init(Cipher.DECRYPT_MODE, key, GCMParameterSpec(128, iv))
+        val key = deriveKey(password, salt)
+        val cipher = Cipher.getInstance(CIPHER_TRANSFORMATION)
+        cipher.init(Cipher.DECRYPT_MODE, key, GCMParameterSpec(TAG_LENGTH_BIT, iv))
         return CipherInputStream(baseStream, cipher)
     }
 
-    /**
-     * Расшифровать поток напрямую в ByteArray (всё в ОЗУ, ноль байтов на диске).
-     * Подходит для файлов ≤ ~20 МБ.
-     */
-    fun decryptToBytes(input: File): ByteArray {
-        input.inputStream().use { ins ->
-            val iv = ByteArray(12)
-            if (ins.read(iv) != 12) throw IllegalStateException("Invalid encrypted file")
-            val cipher = Cipher.getInstance(TRANSFORMATION)
-            cipher.init(Cipher.DECRYPT_MODE, key, GCMParameterSpec(128, iv))
-            return CipherInputStream(ins, cipher).use { it.readBytes() }
-        }
-    }
+    // === Bytes API (для контейнера) ===
 
-    /**
-     * Расшифровать поток в строку (для текстовых файлов, JSON-метаданных и т.п.).
-     */
-    fun decryptToString(input: File): String = String(decryptToBytes(input), Charsets.UTF_8)
-
-    /**
-     * Зашифровать ByteArray в файл (без промежуточного plaintext-файла).
-     */
-    fun encryptBytes(bytes: ByteArray, output: File) {
-        val cipher = Cipher.getInstance(TRANSFORMATION)
+    fun encryptBytes(bytes: ByteArray, output: File, password: String, salt: ByteArray) {
+        val key = deriveKey(password, salt)
+        val cipher = Cipher.getInstance(CIPHER_TRANSFORMATION)
         cipher.init(Cipher.ENCRYPT_MODE, key)
         output.outputStream().use { outs ->
             outs.write(cipher.iv)
-            CipherOutputStream(outs, cipher).use { cipherOut ->
-                cipherOut.write(bytes)
-            }
+            CipherOutputStream(outs, cipher).use { it.write(bytes) }
         }
     }
 
-    /**
-     * Зашифровать строку в файл.
-     */
-    fun encryptString(text: String, output: File) =
-        encryptBytes(text.toByteArray(Charsets.UTF_8), output)
-
-    companion object {
-        private const val KEYSTORE_PROVIDER = "AndroidKeyStore"
-        private const val KEY_ALIAS = "vault_master_key"
-        private const val TRANSFORMATION = "AES/GCM/NoPadding"
+    fun decryptToBytes(bytes: ByteArray, password: String, salt: ByteArray): ByteArray {
+        bytes.inputStream().use { ins ->
+            val iv = ByteArray(IV_SIZE)
+            if (ins.read(iv) != IV_SIZE) throw IllegalStateException("Invalid encrypted data")
+            val key = deriveKey(password, salt)
+            val cipher = Cipher.getInstance(CIPHER_TRANSFORMATION)
+            cipher.init(Cipher.DECRYPT_MODE, key, GCMParameterSpec(TAG_LENGTH_BIT, iv))
+            return CipherInputStream(ins, cipher).use { it.readBytes() }
+        }
     }
 }

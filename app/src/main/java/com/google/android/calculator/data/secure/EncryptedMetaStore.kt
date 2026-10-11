@@ -1,8 +1,7 @@
 package com.google.android.calculator.data.secure
 
 import android.content.Context
-import androidx.security.crypto.EncryptedFile
-import androidx.security.crypto.MasterKey
+import com.google.android.calculator.data.crypto.CryptoManager
 import java.io.File
 
 /**
@@ -20,80 +19,53 @@ import java.io.File
  */
 class EncryptedMetaStore(
     private val context: Context,
-    fileName: String,
+    private val fileName: String,
     private val legacyPlaintextFileName: String? = null
 ) {
-    private val masterKey by lazy {
-        MasterKey.Builder(context).setKeyScheme(MasterKey.KeyScheme.AES256_GCM).build()
-    }
+    private val encryptedFile = File(context.filesDir, fileName)
+    private val legacyFile = legacyPlaintextFileName?.let { File(context.filesDir, it) }
 
-    private val file = File(context.filesDir, fileName)
-    private val backupFile = File(context.filesDir, "$fileName.bak")
-
-    fun readLines(): List<String> {
-        migrateLegacyIfNeeded()
-        if (!file.exists()) return emptyList()
+    fun readLines(password: String): List<String> {
         return try {
-            decryptLines(file)
+            if (encryptedFile.exists()) {
+                val tempOut = File.createTempFile("meta_dec_", ".txt", context.cacheDir)
+                try {
+                    CryptoManager.decrypt(encryptedFile, tempOut, password)
+                    tempOut.readLines()
+                } finally {
+                    tempOut.delete()
+                }
+            } else if (legacyFile?.exists() == true) {
+                // Миграция со старого открытого формата
+                val lines = legacyFile.readLines()
+                writeLines(lines, password)
+                legacyFile.delete()
+                lines
+            } else {
+                emptyList()
+            }
         } catch (e: Exception) {
             emptyList()
         }
     }
 
-    fun writeLines(lines: List<String>) {
-        val payload = lines.joinToString("\n").toByteArray(Charsets.UTF_8)
-
-        // Бэкапим текущие (уже зашифрованные) байты как есть — простое копирование,
-        // без пересборки через EncryptedFile, поэтому путь файла для расшифровки не меняется.
-        if (file.exists()) {
-            file.copyTo(backupFile, overwrite = true)
-        }
-
+    fun writeLines(lines: List<String>, password: String) {
         try {
-            // ВАЖНО: пишем СРАЗУ в целевой файл, а не во временный с последующим
-            // переименованием. EncryptedFile привязывает зашифрованные данные к
-            // конкретному пути файла — переименование после шифрования ломает
-            // расшифровку (данные технически на диске, но не читаются).
-            if (file.exists()) file.delete()
-            val encryptedFile = EncryptedFile.Builder(
-                context, file, masterKey, EncryptedFile.FileEncryptionScheme.AES256_GCM_HKDF_4KB
-            ).build()
-            encryptedFile.openFileOutput().use {
-                it.write(payload)
+            val tempIn = File.createTempFile("meta_enc_", ".txt", context.cacheDir)
+            try {
+                tempIn.writeText(lines.joinToString("\n"))
+                val tempOut = File.createTempFile("meta_out_", ".enc", context.cacheDir)
+                try {
+                    CryptoManager.encrypt(tempIn, tempOut, password)
+                    tempOut.copyTo(encryptedFile, overwrite = true)
+                } finally {
+                    tempOut.delete()
+                }
+            } finally {
+                tempIn.delete()
             }
-            backupFile.delete()
         } catch (e: Exception) {
-            // Что-то пошло не так посреди записи — восстанавливаем предыдущую версию из бэкапа,
-            // чтобы не потерять уже сохранённые данные.
-            if (backupFile.exists()) {
-                if (file.exists()) file.delete()
-                backupFile.copyTo(file, overwrite = true)
-                backupFile.delete()
-            }
             throw e
-        }
-    }
-
-    private fun decryptLines(target: File): List<String> {
-        val encryptedFile = EncryptedFile.Builder(
-            context, target, masterKey, EncryptedFile.FileEncryptionScheme.AES256_GCM_HKDF_4KB
-        ).build()
-        val bytes = encryptedFile.openFileInput().use { it.readBytes() }
-        return bytes.toString(Charsets.UTF_8).split("\n").filter { it.isNotEmpty() }
-    }
-
-    /** Одноразовая миграция со старого незашифрованного файла прошлых версий приложения. */
-    private fun migrateLegacyIfNeeded() {
-        if (legacyPlaintextFileName == null) return
-        if (file.exists()) return // уже мигрировали (или это новый профиль)
-        val legacy = File(context.filesDir, legacyPlaintextFileName)
-        if (!legacy.exists()) return
-        try {
-            val lines = legacy.readLines().filter { it.isNotEmpty() }
-            writeLines(lines)
-            legacy.delete()
-        } catch (e: Exception) {
-            // Не получилось — оставляем старый файл как есть, попробуем ещё раз при следующем запуске.
         }
     }
 }

@@ -4,13 +4,10 @@ import com.google.android.calculator.data.container.VaultContainer
 import com.google.android.calculator.domain.model.VaultFolder
 import com.google.android.calculator.domain.repository.FolderRepository
 import com.google.android.calculator.utils.FileLogger
+import com.google.android.calculator.utils.VaultManager
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 
-/**
- * FolderRepository поверх VaultContainer.
- * Метаданные папок хранятся в записи "__meta_folders" внутри контейнера.
- */
 class FolderRepositoryContainerImpl(
     private val container: VaultContainer
 ) : FolderRepository {
@@ -18,9 +15,12 @@ class FolderRepositoryContainerImpl(
     private val mutex = Mutex()
     private val META_KEY = "folders"
 
+    private fun password(): String =
+        VaultManager.activeSessionPin ?: throw IllegalStateException("Хранилище заблокировано")
+
     private suspend fun load(): MutableList<VaultFolder> {
         return try {
-            container.getMetaLines(META_KEY).mapNotNull { line ->
+            container.getMetaLines(META_KEY, password()).mapNotNull { line ->
                 val p = line.split("|||")
                 if (p.size >= 2) VaultFolder(
                     p[0],
@@ -34,7 +34,7 @@ class FolderRepositoryContainerImpl(
     }
 
     private suspend fun save(list: List<VaultFolder>) {
-        container.putMetaLines(META_KEY, list.map { "${it.id}|||${it.name}|||${it.parentId ?: ""}" })
+        container.putMetaLines(META_KEY, list.map { "${it.id}|||${it.name}|||${it.parentId ?: ""}" }, password())
     }
 
     override suspend fun getFolders(): List<VaultFolder> = mutex.withLock { load() }

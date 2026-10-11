@@ -3,7 +3,6 @@ package com.google.android.calculator.presentation.settings
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
@@ -11,21 +10,16 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
-import com.google.android.calculator.data.container.VaultContainer
-import com.google.android.calculator.data.crypto.CryptoManager
 import com.google.android.calculator.data.secure.SecurePreferences
 import com.google.android.calculator.di.AppContainer
 import com.google.android.calculator.utils.OriginalFileAction
 import com.google.android.calculator.utils.VaultManager
 import com.google.android.calculator.utils.VaultMode
 import com.google.android.calculator.utils.VaultSlot
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -37,13 +31,12 @@ fun SettingsScreen(
     onOpenAbout: () -> Unit,
     onSyncMainPin: (String) -> Unit,
     onSeedSlot: suspend (String) -> Unit,
-    onNavigateToPickFolder: () -> Unit
+    onOpenContainerSettings: () -> Unit
 ) {
     var showChangePinDialog by remember { mutableStateOf(false) }
     var showCreateVaultDialog by remember { mutableStateOf(false) }
     var slotToChangePin by remember { mutableStateOf<VaultSlot?>(null) }
     var slotToDelete by remember { mutableStateOf<VaultSlot?>(null) }
-    var slotToEditContainer by remember { mutableStateOf<VaultSlot?>(null) }
     var showOriginalActionDialog by remember { mutableStateOf(false) }
     var originalAction by remember { mutableStateOf(securePreferences.originalFileAction) }
     var slotsVersion by remember { mutableStateOf(0) }
@@ -97,15 +90,6 @@ fun SettingsScreen(
         )
     }
 
-    slotToEditContainer?.let { slot ->
-        ContainerDialog(
-            slot = slot,
-            appContainer = appContainer,
-            onPickFolder = { onNavigateToPickFolder() },
-            onDismiss = { slotToEditContainer = null; slotsVersion++ }
-        )
-    }
-
     if (showOriginalActionDialog) {
         OriginalActionDialog(
             current = originalAction,
@@ -133,7 +117,7 @@ fun SettingsScreen(
         }
     ) { padding ->
         LazyColumn(
-            Modifier.navigationBarsPadding().fillMaxSize().padding(padding),
+            Modifier.fillMaxSize().padding(padding),
             verticalArrangement = Arrangement.spacedBy(4.dp)
         ) {
             item { SectionTitle("Безопасность") }
@@ -143,6 +127,21 @@ fun SettingsScreen(
                     supportingContent = { Text("Код доступа текущего хранилища") },
                     leadingContent = { Icon(Icons.Default.Lock, null, tint = MaterialTheme.colorScheme.primary) },
                     modifier = Modifier.clickable { showChangePinDialog = true }
+                )
+            }
+
+            item {
+                ListItem(
+                    headlineContent = { Text("Контейнер хранилища") },
+                    supportingContent = {
+                        val enabled = VaultManager.containerEnabled(VaultManager.currentSlotId)
+                        val valid = VaultManager.isContainerValid(VaultManager.currentSlotId)
+                        if (enabled && valid) "Переносимый контейнер ✓"
+                        else if (enabled) "Контейнер не настроен"
+                        else "Обычное хранилище"
+                    },
+                    leadingContent = { Icon(Icons.Default.Storage, null, tint = MaterialTheme.colorScheme.primary) },
+                    modifier = Modifier.clickable { onOpenContainerSettings() }
                 )
             }
 
@@ -161,9 +160,6 @@ fun SettingsScreen(
                             ) {
                                 Text(slot.label, style = MaterialTheme.typography.bodyLarge)
                                 Row {
-                                    IconButton(onClick = { slotToEditContainer = slot }) {
-                                        Icon(Icons.Default.Storage, "Контейнер", tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(20.dp))
-                                    }
                                     IconButton(onClick = { slotToChangePin = slot }) {
                                         Icon(Icons.Default.Key, "Сменить PIN", tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(20.dp))
                                     }
@@ -226,19 +222,17 @@ fun SettingsScreen(
                 )
             }
 
-            if (!isDecoyMode) {
-                item { HorizontalDivider(Modifier.padding(vertical = 8.dp)) }
-                item { SectionTitle("Карты и навигация") }
-                item {
-                    ListItem(
-                        headlineContent = { Text("Оффлайн-карты") },
-                        supportingContent = { Text("Загрузка карт и графов дорог") },
-                        leadingContent = { Icon(Icons.Default.Map, null, tint = MaterialTheme.colorScheme.primary) },
-                        modifier = Modifier.clickable { onOpenOfflineMaps() }
-                    )
-                }
+            item { HorizontalDivider(Modifier.padding(vertical = 8.dp)) }
+            item { SectionTitle("Карты и навигация") }
+            item {
+                ListItem(
+                    headlineContent = { Text("Оффлайн-карты") },
+                    supportingContent = { Text("Загрузка карт и графов дорог") },
+                    leadingContent = { Icon(Icons.Default.Map, null, tint = MaterialTheme.colorScheme.primary) },
+                    modifier = Modifier.clickable { onOpenOfflineMaps() }
+                )
             }
-            
+
             item { HorizontalDivider(Modifier.padding(vertical = 8.dp)) }
             item { SectionTitle("Приложение") }
             item {
@@ -260,156 +254,6 @@ private fun SectionTitle(text: String) {
         style = MaterialTheme.typography.titleSmall,
         modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
         color = MaterialTheme.colorScheme.primary
-    )
-}
-
-@Composable
-private fun ContainerDialog(
-    slot: VaultSlot,
-    appContainer: AppContainer,
-    onPickFolder: () -> Unit,
-    onDismiss: () -> Unit
-) {
-    val context = LocalContext.current
-    val scope = rememberCoroutineScope()
-    var enabled by remember { mutableStateOf(VaultManager.containerEnabled(slot.id)) }
-    var name by remember { mutableStateOf(VaultManager.containerName(slot.id)) }
-    
-    var currentPath by remember(slot.id) { mutableStateOf(VaultManager.containerPath(slot.id)) }
-    var statusMessage by remember { mutableStateOf<String?>(null) }
-
-    val containerFile = VaultManager.containerFile(slot.id)
-    val containerExists = VaultManager.isContainerValid(slot.id)
-    val containerSize = containerFile?.takeIf { it.exists() }?.let {
-        val bytes = it.length()
-        when {
-            bytes < 1024 -> "$bytes Б"
-            bytes < 1024 * 1024 -> "${bytes / 1024} КБ"
-            else -> "${bytes / (1024 * 1024)} МБ"
-        }
-    } ?: "—"
-
-    val pickerResult by appContainer.folderPickerResult.collectAsState()
-    LaunchedEffect(pickerResult) {
-        if (pickerResult != null) {
-            VaultManager.setContainerPath(slot.id, pickerResult)
-            currentPath = pickerResult
-            appContainer.resetFolderPickerResult()
-        }
-    }
-
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text("Контейнер: ${slot.label}") },
-        text = {
-            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                Text(
-                    "Файл-контейнер хранит все данные хранилища в одном замаскированном файле во внешней папке.",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Switch(
-                        checked = enabled,
-                        onCheckedChange = {
-                            enabled = it
-                            VaultManager.setContainerEnabled(slot.id, it)
-                        }
-                    )
-                    Spacer(Modifier.width(8.dp))
-                    Text("Использовать контейнер")
-                }
-
-                OutlinedTextField(
-                    value = name,
-                    onValueChange = {
-                        name = it
-                        VaultManager.setContainerName(slot.id, it)
-                    },
-                    label = { Text("Имя файла") },
-                    supportingText = { Text("Например: media_cache.bin, .cache_data") },
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth()
-                )
-
-                ListItem(
-                    headlineContent = { Text("Папка контейнера") },
-                    supportingContent = { Text(currentPath ?: "Не выбрана") },
-                    leadingContent = { Icon(Icons.Default.Folder, null) },
-                    modifier = Modifier.clickable { onPickFolder() }
-                )
-
-                HorizontalDivider()
-
-                if (currentPath != null && !containerExists) {
-                    Button(
-                        onClick = {
-                            scope.launch {
-                                try {
-                                    val crypto = CryptoManager(context)
-                                    val container = VaultContainer(containerFile!!, crypto)
-                                    withContext(Dispatchers.IO) { container.create() }
-                                    statusMessage = "✅ Контейнер создан"
-                                } catch (e: Exception) {
-                                    statusMessage = "❌ ${e.message}"
-                                }
-                            }
-                        },
-                        modifier = Modifier.fillMaxWidth(),
-                        enabled = enabled
-                    ) {
-                        Icon(Icons.Default.Add, null, Modifier.size(18.dp))
-                        Spacer(Modifier.width(8.dp))
-                        Text("Создать контейнер")
-                    }
-                }
-
-                if (containerExists) {
-                    ListItem(
-                        headlineContent = { Text("Размер") },
-                        supportingContent = { Text(containerSize) },
-                        leadingContent = { Icon(Icons.Default.Storage, null) }
-                    )
-
-                    OutlinedButton(
-                        onClick = {
-                            scope.launch {
-                                try {
-                                    val crypto = CryptoManager(context)
-                                    val container = VaultContainer(containerFile!!, crypto)
-                                    withContext(Dispatchers.IO) {
-                                        container.open()
-                                        container.compact()
-                                    }
-                                    statusMessage = "✅ Упакован (освобождено место)"
-                                } catch (e: Exception) {
-                                    statusMessage = "❌ ${e.message}"
-                                }
-                            }
-                        },
-                        modifier = Modifier.fillMaxWidth(),
-                        enabled = enabled
-                    ) {
-                        Text("Упаковать (compact) — освободить место")
-                    }
-                }
-
-                if (statusMessage != null) {
-                    Text(
-                        statusMessage!!,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = if (statusMessage!!.startsWith("✅"))
-                            MaterialTheme.colorScheme.primary
-                        else
-                            MaterialTheme.colorScheme.error
-                    )
-                }
-            }
-        },
-        confirmButton = {
-            TextButton(onClick = onDismiss) { Text("Закрыть") }
-        }
     )
 }
 
@@ -597,9 +441,8 @@ private fun OriginalActionDialog(
                     OriginalFileAction.DELETE to "Удалять после переноса в хранилище",
                     OriginalFileAction.SHRED to "Затирать (random + zeros) и удалять — безопасно"
                 ).forEach { (action, label) ->
-                    // ⭐ ИСПРАВЛЕНО: теперь используется обычный Row, который корректно импортирован через layout.*
                     Row(
-                        modifier = Modifier.fillMaxWidth().clickable { selected = action }.padding(vertical = 4.dp),
+                        Modifier.fillMaxWidth().clickable { selected = action }.padding(vertical = 4.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         RadioButton(selected = selected == action, onClick = { selected = action })

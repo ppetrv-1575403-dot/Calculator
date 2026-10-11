@@ -32,6 +32,10 @@ object VaultManager {
     var currentSlotId: String = REAL_ID
         private set
 
+    // ⭐ PIN-код текущей активной сессии — нужен для шифрования/дешифрования
+    var activeSessionPin: String? = null
+        private set
+
     val currentMode: VaultMode
         get() = if (currentSlotId == REAL_ID) VaultMode.REAL else VaultMode.DECOY
 
@@ -76,7 +80,11 @@ object VaultManager {
 
     fun authenticateSlot(pin: String): VaultSlot? {
         val h = hash(pin)
-        return slots().firstOrNull { prefs?.getString(keyPin(it.id), null) == h }
+        val slot = slots().firstOrNull { prefs?.getString(keyPin(it.id), null) == h }
+        if (slot != null) {
+            activeSessionPin = pin
+        }
+        return slot
     }
 
     fun authenticate(pin: String): VaultMode? =
@@ -89,6 +97,13 @@ object VaultManager {
 
     fun enterMode(mode: VaultMode) {
         enterSlot(if (mode == VaultMode.REAL) REAL_ID else decoySlots().firstOrNull()?.id ?: REAL_ID)
+    }
+
+    /** Блокировка хранилища: очищает PIN и сбрасывает слот */
+    fun lock() {
+        activeSessionPin = null
+        currentSlotId = REAL_ID
+        FileLogger.i("Vault", "Locked")
     }
 
     fun storageSuffix(): String = if (currentSlotId == REAL_ID) "" else "_$currentSlotId"
@@ -135,7 +150,7 @@ object VaultManager {
     // === Контейнер ===
 
     fun containerPath(id: String): String? = prefs?.getString(keyContainerPath(id), null)
-    
+
     fun setContainerPath(id: String, path: String?) =
         prefs?.edit()?.apply {
             if (path == null) remove(keyContainerPath(id)) else putString(keyContainerPath(id), path)
@@ -159,10 +174,9 @@ object VaultManager {
         return File(path, name)
     }
 
-    // ⭐ Проверка: существует ли файл контейнера и имеет ли он минимальный размер
     fun isContainerValid(id: String): Boolean {
         val f = containerFile(id)
-        return f != null && f.exists() && f.length() >= 16
+        return f != null && f.exists() && f.length() >= 32
     }
 
     private fun defaultContainerName(id: String): String =
@@ -171,13 +185,13 @@ object VaultManager {
     // === Legacy API ===
 
     fun enableDecoy(pin: String) { createDecoySlot(pin, "Фейковое ${decoySlots().size + 1}") }
-    
+
     fun changeMainPin(old: String, new: String, sync: (String) -> Unit): Boolean =
         changePin(REAL_ID, old, new, sync)
-        
+
     fun changeDecoyPin(old: String, new: String): Boolean =
         authenticateSlot(old)?.let { if (it.isReal) false else changePin(it.id, old, new) } ?: false
-        
+
     fun disableDecoy(mainPin: String): Boolean =
         decoySlots().firstOrNull()?.let { deleteSlot(it.id, mainPin) } ?: false
 

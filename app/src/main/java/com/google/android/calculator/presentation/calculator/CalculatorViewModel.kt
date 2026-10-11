@@ -91,17 +91,11 @@ class CalculatorViewModel(
         if (display.isEmpty()) { pinHintVisible = true; return }
         val entered = display.trim()
 
-        // ⭐ 1. Пытаемся найти КОНКРЕТНЫЙ слот по PIN (основной или любой фейковый)
         val slot = VaultManager.authenticateSlot(entered)
         if (slot != null) {
-            FileLogger.i("Vault", "Unlock successful: slotId=${slot.id}, label=${slot.label}")
-            
-            // ⭐ 2. Переключаемся именно на этот слот
+            FileLogger.i("Vault", "Unlock successful: slotId=${slot.id}")
             VaultManager.enterSlot(slot.id)
-            
-            // ⭐ 3. Очищаем кэш репозиториев, чтобы загрузились данные именно этого контейнера
             appContainer.invalidateCacheForSlot(slot.id)
-            
             onVaultOpened()
             onClear()
             return

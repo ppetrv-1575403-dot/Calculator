@@ -25,12 +25,14 @@ class VaultContainer(
 
     private val mutex = Mutex()
     private var index = mutableListOf<Entry>()
-    private var lastKnownModified: Long = 0L // ⭐ Отслеживание времени изменения файла
+    private var lastKnownModified: Long = 0L
 
     companion object {
         private const val MAGIC = "CVLT"
-        private const val VERSION = 1
-        private const val HEADER_SIZE = 16L
+        private const val VERSION = 2
+        private const val SALT_SIZE = 16
+        // MAGIC(4) + VERSION(4) + SALT(16) + INDEX_OFFSET(8) = 32
+        private const val HEADER_SIZE = 32L
         private const val META_PREFIX = "__meta_"
         private const val BUF = 64 * 1024
     }
@@ -38,35 +40,40 @@ class VaultContainer(
     fun path(): String = containerFile.absolutePath
     fun exists(): Boolean = containerFile.exists() && containerFile.length() >= HEADER_SIZE
 
-    fun create() {
+    fun create(password: String) {
         containerFile.parentFile?.mkdirs()
+        val salt = CryptoManager.generateSalt()
         RandomAccessFile(containerFile, "rw").use { raf ->
             raf.setLength(0)
             raf.writeBytes(MAGIC)
             raf.writeInt(VERSION)
+            raf.write(salt)
             raf.writeLong(HEADER_SIZE)
         }
         index = mutableListOf()
-        appendIndex()
+        appendIndex(password)
         lastKnownModified = containerFile.lastModified()
     }
 
-    fun open() {
+    fun open(password: String) {
         val currentModified = containerFile.lastModified()
-        // ⭐ Перечитываем индекс только если файл был изменен или индекс пуст
         if (currentModified != lastKnownModified || index.isEmpty()) {
             RandomAccessFile(containerFile, "r").use { raf ->
                 val magic = ByteArray(4); raf.readFully(magic)
                 require(String(magic) == MAGIC) { "Файл не является контейнером хранилища" }
                 val version = raf.readInt()
                 require(version == VERSION) { "Неподдерживаемая версия контейнера: $version" }
+
+                val salt = ByteArray(SALT_SIZE)
+                raf.readFully(salt)
+
                 val indexOffset = raf.readLong()
                 raf.seek(indexOffset)
                 val len = raf.readLong()
                 val enc = ByteArray(len.toInt()); raf.readFully(enc)
-                index = decryptIndex(enc).toMutableList()
-                
-                lastKnownModified = currentModified // ⭐ Обновляем известное время
+                index = decryptIndex(enc, password, salt).toMutableList()
+
+                lastKnownModified = currentModified
             }
         }
     }
@@ -80,23 +87,25 @@ class VaultContainer(
         originalName: String,
         mime: String,
         folderId: String?,
-        plaintext: File
+        plaintext: File,
+        password: String
     ): Result<Unit> = mutex.withLock {
         try {
+            val salt = readSalt()
             val offset: Long
             val length: Long
             RandomAccessFile(containerFile, "rw").use { raf ->
                 raf.seek(raf.length())
                 offset = raf.filePointer
                 val out: OutputStream = RafOutputStream(raf)
-                crypto.encryptStream(out).use { cipherOut ->
+                crypto.encryptStream(out, password, salt).use { cipherOut ->
                     plaintext.inputStream().use { it.copyTo(cipherOut, BUF) }
                 }
                 length = raf.filePointer - offset
             }
             index.removeAll { it.id == id }
             index.add(Entry(id, originalName, mime, folderId, offset, length))
-            appendIndex()
+            appendIndex(password)
             Result.success(Unit)
         } catch (e: Exception) {
             FileLogger.e("VaultContainer", "putEntry failed: $id", e)
@@ -109,22 +118,24 @@ class VaultContainer(
         originalName: String,
         mime: String,
         folderId: String?,
-        bytes: ByteArray
+        bytes: ByteArray,
+        password: String
     ): Result<Unit> = mutex.withLock {
         try {
+            val salt = readSalt()
             val offset: Long; val length: Long
             RandomAccessFile(containerFile, "rw").use { raf ->
                 raf.seek(raf.length())
                 offset = raf.filePointer
                 val out: OutputStream = RafOutputStream(raf)
-                crypto.encryptStream(out).use { cipherOut ->
+                crypto.encryptStream(out, password, salt).use { cipherOut ->
                     cipherOut.write(bytes)
                 }
                 length = raf.filePointer - offset
             }
             index.removeAll { it.id == id }
             index.add(Entry(id, originalName, mime, folderId, offset, length))
-            appendIndex()
+            appendIndex(password)
             Result.success(Unit)
         } catch (e: Exception) {
             FileLogger.e("VaultContainer", "putEntryBytes failed: $id", e)
@@ -132,14 +143,15 @@ class VaultContainer(
         }
     }
 
-    suspend fun getEntry(id: String, outPlaintext: File): Result<Unit> = mutex.withLock {
+    suspend fun getEntry(id: String, outPlaintext: File, password: String): Result<Unit> = mutex.withLock {
         val entry = findEntry(id)
             ?: return@withLock Result.failure<Unit>(Exception("Entry not found: $id"))
         try {
+            val salt = readSalt()
             RandomAccessFile(containerFile, "r").use { raf ->
                 raf.seek(entry.offset)
                 val sliceStream: InputStream = BoundedInputStream(RafInputStream(raf), entry.length)
-                crypto.decryptStream(sliceStream).use { plainIn ->
+                crypto.decryptStream(sliceStream, password, salt).use { plainIn ->
                     outPlaintext.outputStream().buffered().use { out ->
                         plainIn.copyTo(out, BUF)
                     }
@@ -152,19 +164,18 @@ class VaultContainer(
         }
     }
 
-    suspend fun getEntryBytes(id: String): Result<ByteArray> = mutex.withLock {
+    suspend fun getEntryBytes(id: String, password: String): Result<ByteArray> = mutex.withLock {
         val entry = findEntry(id)
             ?: return@withLock Result.failure<ByteArray>(Exception("Entry not found: $id"))
         try {
+            val salt = readSalt()
             val bytes = RandomAccessFile(containerFile, "r").use { raf ->
                 raf.seek(entry.offset)
                 val slice = ByteArray(entry.length.toInt())
                 raf.readFully(slice)
                 slice
             }
-            val plain = bytes.inputStream().use { raw ->
-                crypto.decryptStream(raw).use { it.readBytes() }
-            }
+            val plain = crypto.decryptToBytes(bytes, password, salt)
             Result.success(plain)
         } catch (e: Exception) {
             FileLogger.e("VaultContainer", "getEntryBytes failed: $id", e)
@@ -172,38 +183,39 @@ class VaultContainer(
         }
     }
 
-    suspend fun removeEntry(id: String): Result<Unit> = mutex.withLock {
+    suspend fun removeEntry(id: String, password: String): Result<Unit> = mutex.withLock {
         try {
             index.removeAll { it.id == id }
-            appendIndex()
+            appendIndex(password)
             Result.success(Unit)
         } catch (e: Exception) { Result.failure(e) }
     }
 
-    suspend fun moveEntry(id: String, newFolderId: String?): Result<Unit> = mutex.withLock {
+    suspend fun moveEntry(id: String, newFolderId: String?, password: String): Result<Unit> = mutex.withLock {
         try {
             val i = index.indexOfFirst { it.id == id }
             if (i >= 0) index[i] = index[i].copy(folderId = newFolderId)
-            appendIndex()
+            appendIndex(password)
             Result.success(Unit)
         } catch (e: Exception) { Result.failure(e) }
     }
 
-    suspend fun putMetaLines(key: String, lines: List<String>): Result<Unit> =
+    suspend fun putMetaLines(key: String, lines: List<String>, password: String): Result<Unit> =
         putEntryBytes(META_PREFIX + key, key, "text/plain", null,
-            lines.joinToString("\n").toByteArray(StandardCharsets.UTF_8))
+            lines.joinToString("\n").toByteArray(StandardCharsets.UTF_8), password)
 
-    suspend fun getMetaLines(key: String): List<String> =
-        getEntryBytes(META_PREFIX + key).getOrNull()
+    suspend fun getMetaLines(key: String, password: String): List<String> =
+        getEntryBytes(META_PREFIX + key, password).getOrNull()
             ?.toString(StandardCharsets.UTF_8)?.split("\n")?.filter { it.isNotEmpty() }
             ?: emptyList()
 
-    suspend fun compact(): Result<Unit> = mutex.withLock {
+    suspend fun compact(password: String): Result<Unit> = mutex.withLock {
         try {
+            val salt = readSalt()
             val tmp = File(containerFile.absolutePath + ".compact")
             val newIndex = mutableListOf<Entry>()
             RandomAccessFile(tmp, "rw").use { out ->
-                out.writeBytes(MAGIC); out.writeInt(VERSION); out.writeLong(HEADER_SIZE)
+                out.writeBytes(MAGIC); out.writeInt(VERSION); out.write(salt); out.writeLong(HEADER_SIZE)
                 val buf = ByteArray(BUF)
                 RandomAccessFile(containerFile, "r").use { src ->
                     index.forEach { e ->
@@ -219,20 +231,32 @@ class VaultContainer(
                     }
                 }
                 index = newIndex
-                val enc = encryptIndex(index)
+                val enc = encryptIndex(index, password, salt)
                 val off = out.filePointer
                 out.writeLong(enc.size.toLong()); out.write(enc)
                 out.seek(8); out.writeLong(off)
             }
             containerFile.delete()
             tmp.renameTo(containerFile)
-            lastKnownModified = containerFile.lastModified() // ⭐ Обновляем время после compact
+            lastKnownModified = containerFile.lastModified()
             Result.success(Unit)
         } catch (e: Exception) { Result.failure(e) }
     }
 
-    private fun appendIndex() {
-        val enc = encryptIndex(index)
+    // === Внутреннее ===
+
+    private fun readSalt(): ByteArray {
+        val salt = ByteArray(SALT_SIZE)
+        RandomAccessFile(containerFile, "r").use { raf ->
+            raf.seek(8) // После MAGIC + VERSION
+            raf.readFully(salt)
+        }
+        return salt
+    }
+
+    private fun appendIndex(password: String) {
+        val salt = readSalt()
+        val enc = encryptIndex(index, password, salt)
         RandomAccessFile(containerFile, "rw").use { raf ->
             raf.seek(raf.length())
             val off = raf.filePointer
@@ -244,21 +268,19 @@ class VaultContainer(
         lastKnownModified = containerFile.lastModified()
     }
 
-    private fun encryptIndex(entries: List<Entry>): ByteArray {
+    private fun encryptIndex(entries: List<Entry>, password: String, salt: ByteArray): ByteArray {
         val plain = entries.joinToString("\n") {
             "${it.id}|||${it.originalName}|||${it.mime}|||${it.folderId ?: ""}|||${it.offset}|||${it.length}"
         }.toByteArray(StandardCharsets.UTF_8)
         val tmp = File.createTempFile("vc_idx", ".enc", containerFile.parentFile)
         try {
-            crypto.encryptBytes(plain, tmp)
+            CryptoManager.encryptBytes(plain, tmp, password, salt)
             return tmp.readBytes()
         } finally { tmp.delete() }
     }
 
-    private fun decryptIndex(bytes: ByteArray): List<Entry> {
-        val plain = bytes.inputStream().use { raw ->
-            crypto.decryptStream(raw).use { it.readBytes() }
-        }
+    private fun decryptIndex(bytes: ByteArray, password: String, salt: ByteArray): List<Entry> {
+        val plain = CryptoManager.decryptToBytes(bytes, password, salt)
         return String(plain, StandardCharsets.UTF_8).split("\n").filter { it.isNotEmpty() }.mapNotNull { line ->
             val p = line.split("|||")
             if (p.size >= 6) Entry(

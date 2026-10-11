@@ -4,6 +4,7 @@ import android.content.Context
 import com.google.android.calculator.data.secure.EncryptedMetaStore
 import com.google.android.calculator.domain.model.VaultFolder
 import com.google.android.calculator.domain.repository.FolderRepository
+import com.google.android.calculator.utils.VaultManager
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -22,9 +23,14 @@ class FolderRepositoryImpl(
     )
     private val mutex = Mutex()
 
+    private fun getPassword(): String {
+        return VaultManager.activeSessionPin 
+            ?: throw IllegalStateException("Хранилище заблокировано. Введите PIN.")
+    }
+
     private fun load(): MutableList<VaultFolder> {
         return try {
-            metaStore.readLines().mapNotNull { line ->
+            metaStore.readLines(getPassword()).mapNotNull { line ->
                 val p = line.split("|||")
                 if (p.size >= 2) VaultFolder(p[0], p[1], if (p.size >= 3) p[2].takeIf { it.isNotEmpty() } else null) else null
             }.toMutableList()
@@ -32,7 +38,7 @@ class FolderRepositoryImpl(
     }
 
     private fun save(list: List<VaultFolder>) {
-        metaStore.writeLines(list.map { "${it.id}|||${it.name}|||${it.parentId ?: ""}" })
+        metaStore.writeLines(list.map { "${it.id}|||${it.name}|||${it.parentId ?: ""}" }, getPassword())
     }
 
     override suspend fun getFolders() = withContext(Dispatchers.IO) { mutex.withLock { load() } }

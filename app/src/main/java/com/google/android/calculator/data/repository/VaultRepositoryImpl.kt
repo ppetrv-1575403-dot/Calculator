@@ -6,6 +6,7 @@ import com.google.android.calculator.data.crypto.CryptoManager
 import com.google.android.calculator.data.secure.EncryptedMetaStore
 import com.google.android.calculator.domain.model.VaultFile
 import com.google.android.calculator.domain.repository.VaultRepository
+import com.google.android.calculator.utils.VaultManager
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -36,9 +37,14 @@ class VaultRepositoryImpl(
         val folderId: String? = null
     )
 
+    private fun getPassword(): String {
+        return VaultManager.activeSessionPin 
+            ?: throw IllegalStateException("Хранилище заблокировано. Введите PIN.")
+    }
+
     private fun loadMeta(): MutableList<Meta> {
         return try {
-            metaStore.readLines().mapNotNull { line ->
+            metaStore.readLines(getPassword()).mapNotNull { line ->
                 val p = line.split("|||")
                 if (p.size >= 4) Meta(
                     p[0], p[1], p[2], p[3],
@@ -48,10 +54,10 @@ class VaultRepositoryImpl(
         } catch (e: Exception) { mutableListOf() }
     }
 
-    private fun saveMeta(list: List<Meta>) {
+    private fun saveMeta(list: List<Meta>, password: String) {
         metaStore.writeLines(list.map {
             "${it.id}|||${it.originalName}|||${it.encName}|||${it.mime}|||${it.folderId ?: ""}"
-        })
+        }, password)
     }
 
     override suspend fun getFiles() = withContext(Dispatchers.IO) {
@@ -62,15 +68,19 @@ class VaultRepositoryImpl(
         withContext(Dispatchers.IO) {
             mutex.withLock {
                 try {
+                    val password = getPassword()
                     val encName = "${System.currentTimeMillis()}.enc"
                     val tempIn = File(context.cacheDir, "vault_temp_in_${System.nanoTime()}")
-                    context.contentResolver.openInputStream(uri)?.use { ins -> tempIn.outputStream().use { out -> ins.copyTo(out) } }
-                        ?: return@withLock Result.failure<Unit>(Exception("Cannot open file"))
-                    crypto.encrypt(tempIn, File(vaultDir, encName))
+                    context.contentResolver.openInputStream(uri)?.use { ins -> 
+                        tempIn.outputStream().use { out -> ins.copyTo(out) } 
+                    } ?: return@withLock Result.failure<Unit>(Exception("Cannot open file"))
+                    
+                    crypto.encrypt(tempIn, File(vaultDir, encName), password)
                     tempIn.delete()
+                    
                     val list = loadMeta()
                     list.add(Meta(System.currentTimeMillis().toString(), originalName, encName, mimeType, folderId))
-                    saveMeta(list)
+                    saveMeta(list, password)
                     Result.success(Unit)
                 } catch (e: Exception) { Result.failure(e) }
             }
@@ -80,16 +90,20 @@ class VaultRepositoryImpl(
         withContext(Dispatchers.IO) {
             mutex.withLock {
                 try {
+                    val password = getPassword()
                     val id = System.currentTimeMillis().toString()
                     val encName = "${System.currentTimeMillis()}.enc"
                     val tempIn = File(context.cacheDir, "vault_temp_in_${System.nanoTime()}")
-                    context.contentResolver.openInputStream(uri)?.use { ins -> tempIn.outputStream().use { out -> ins.copyTo(out) } }
-                        ?: return@withLock Result.failure<String>(Exception("Cannot open file"))
-                    crypto.encrypt(tempIn, File(vaultDir, encName))
+                    context.contentResolver.openInputStream(uri)?.use { ins -> 
+                        tempIn.outputStream().use { out -> ins.copyTo(out) } 
+                    } ?: return@withLock Result.failure<String>(Exception("Cannot open file"))
+                    
+                    crypto.encrypt(tempIn, File(vaultDir, encName), password)
                     tempIn.delete()
+                    
                     val list = loadMeta()
                     list.add(Meta(id, originalName, encName, mimeType, folderId))
-                    saveMeta(list)
+                    saveMeta(list, password)
                     Result.success(id)
                 } catch (e: Exception) { Result.failure(e) }
             }
@@ -98,10 +112,11 @@ class VaultRepositoryImpl(
     override suspend fun deleteFile(fileId: String) = withContext(Dispatchers.IO) {
         mutex.withLock {
             try {
+                val password = getPassword()
                 val list = loadMeta()
                 val f = list.find { it.id == fileId } ?: return@withLock Result.failure<Unit>(Exception("Not found"))
                 list.remove(f)
-                saveMeta(list)
+                saveMeta(list, password)
                 File(vaultDir, f.encName).delete()
                 Result.success(Unit)
             } catch (e: Exception) { Result.failure(e) }
@@ -110,18 +125,22 @@ class VaultRepositoryImpl(
 
     override suspend fun decryptToTempFile(encryptedFileName: String) = withContext(Dispatchers.IO) {
         try {
+            val password = getPassword()
             val enc = File(vaultDir, encryptedFileName)
             if (!enc.exists()) null
-            else File(context.cacheDir, "vault_temp_out_${System.nanoTime()}").also { crypto.decrypt(enc, it) }
+            else File(context.cacheDir, "vault_temp_out_${System.nanoTime()}").also { 
+                crypto.decrypt(enc, it, password) 
+            }
         } catch (e: Exception) { null }
     }
 
     override suspend fun moveFilesToFolder(fromFolderId: String, toFolderId: String?) = withContext(Dispatchers.IO) {
         mutex.withLock {
             try {
+                val password = getPassword()
                 val list = loadMeta()
                 list.forEachIndexed { i, m -> if (m.folderId == fromFolderId) list[i] = m.copy(folderId = toFolderId) }
-                saveMeta(list)
+                saveMeta(list, password)
                 Result.success(Unit)
             } catch (e: Exception) { Result.failure(e) }
         }
@@ -130,11 +149,12 @@ class VaultRepositoryImpl(
     override suspend fun moveFileToFolder(fileId: String, targetFolderId: String?) = withContext(Dispatchers.IO) {
         mutex.withLock {
             try {
+                val password = getPassword()
                 val list = loadMeta()
                 val index = list.indexOfFirst { it.id == fileId }
                 if (index < 0) return@withLock Result.failure<Unit>(Exception("File not found"))
                 list[index] = list[index].copy(folderId = targetFolderId)
-                saveMeta(list)
+                saveMeta(list, password)
                 Result.success(Unit)
             } catch (e: Exception) { Result.failure(e) }
         }

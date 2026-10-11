@@ -15,15 +15,14 @@ import com.google.android.calculator.presentation.locations.AddLocationScreen
 import com.google.android.calculator.presentation.locations.MapLibreMapScreen
 import com.google.android.calculator.presentation.locations.OfflineMapsScreen
 import com.google.android.calculator.presentation.preview.PreviewScreen
+import com.google.android.calculator.presentation.settings.ContainerSettingsScreen
 import com.google.android.calculator.presentation.settings.SettingsScreen
 import com.google.android.calculator.presentation.setup.SetupPinScreen
 import com.google.android.calculator.presentation.vault.VaultScreen
 import com.google.android.calculator.utils.DecoySeeder
 import com.google.android.calculator.utils.PermissionUtils
 import com.google.android.calculator.utils.VaultManager
-import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 @Composable
@@ -62,7 +61,8 @@ fun AppNavigator(appContainer: AppContainer, mainActivity: MainActivity) {
                 onBack = {
                     navController.popBackStack()
                     mainActivity.markVaultAsClosed()
-                    VaultManager.enterSlot(VaultManager.REAL_ID)
+                    VaultManager.lock()
+                    appContainer.invalidateCacheForSlot(VaultManager.currentSlotId)
                 },
                 onNavigateToPicker = { fid -> navController.navigate("file_picker/${fid.ifEmpty { "root" }}") },
                 onAddLocation = { fid -> navController.navigate("add_location/${fid.ifEmpty { "root" }}") },
@@ -209,12 +209,19 @@ fun AppNavigator(appContainer: AppContainer, mainActivity: MainActivity) {
                     appContainer.savePinUseCase(newPin)
                 },
                 onSeedSlot = { slotId ->
-                    // ⭐ НЕ меняем currentSlotId — берём репозиторий слота напрямую
                     withContext(Dispatchers.IO) {
                         val locRepo = appContainer.locationRepositoryForSlot(slotId)
                         DecoySeeder.seedLocationRepository(locRepo)
                     }
                 },
+                onOpenContainerSettings = { navController.navigate("container_settings") }
+            )
+        }
+
+        composable("container_settings") {
+            ContainerSettingsScreen(
+                appContainer = appContainer,
+                onBack = { navController.popBackStack() },
                 onNavigateToPickFolder = { navController.navigate("pick_folder") }
             )
         }

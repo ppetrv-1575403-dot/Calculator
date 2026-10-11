@@ -36,7 +36,7 @@ class AppContainer(context: Context) {
     }
 
     val securePreferences by lazy { SecurePreferences(appContext) }
-    val cryptoManager by lazy { CryptoManager(appContext) }
+    val cryptoManager by lazy { CryptoManager }
 
     val pinRepository: PinRepository by lazy { PinRepositoryImpl(securePreferences) }
 
@@ -48,13 +48,14 @@ class AppContainer(context: Context) {
     private fun containerForSlot(slotId: String): VaultContainer? {
         if (!VaultManager.containerEnabled(slotId)) return null
         val file = VaultManager.containerFile(slotId) ?: return null
+        val password = VaultManager.activeSessionPin ?: return null
         return containerCache.getOrPut(slotId) {
             val c = VaultContainer(file, cryptoManager)
             try {
-                if (!c.exists()) c.create() else c.open()
+                if (!c.exists()) c.create(password) else c.open(password)
             } catch (e: Exception) {
                 FileLogger.e("AppContainer", "Container open failed for slot $slotId", e)
-                try { c.create() } catch (e2: Exception) { /* fallback */ }
+                try { c.create(password) } catch (e2: Exception) { /* fallback */ }
             }
             c
         }
@@ -103,7 +104,6 @@ class AppContainer(context: Context) {
         }
     }
 
-    // ⭐ Новый метод: принудительная очистка кэша при изменениях
     fun invalidateCacheForSlot(slotId: String) {
         containerCache.remove(slotId)
         vaultRepoCache.remove(slotId)
