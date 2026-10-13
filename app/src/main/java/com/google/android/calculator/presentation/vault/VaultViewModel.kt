@@ -12,6 +12,7 @@ import com.google.android.calculator.domain.model.VaultFolder
 import com.google.android.calculator.domain.usecase.AddFileUseCase
 import com.google.android.calculator.domain.usecase.GetFilesUseCase
 import com.google.android.calculator.domain.repository.VaultRepository
+import com.google.android.calculator.utils.FileLogger
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -33,8 +34,6 @@ class VaultViewModel(
     var currentFolder by mutableStateOf<VaultFolder?>(null); private set
     var fileToExport by mutableStateOf<VaultFile?>(null); private set
     var itemToMove by mutableStateOf<VaultItem?>(null); private set
-    
-    // ⭐ Явный флаг загрузки для плавного UI
     var isLoading by mutableStateOf(true); private set
 
     private val folderStack = ArrayDeque<VaultFolder?>()
@@ -44,19 +43,29 @@ class VaultViewModel(
     fun refresh() { loadItems() }
 
     private fun loadItems() {
-        isLoading = true // ⭐ Мгновенно показываем загрузку
+        isLoading = true
         viewModelScope.launch {
-            // ⭐ Вся тяжёлая работа (включая deriveKey) строго в фоновом потоке
-            val result = withContext(Dispatchers.IO) {
-                val fid = currentFolder?.id
-                val folders = appContainer.folderRepository.getFolders().filter { it.parentId == fid }.map { VaultItem.FolderItem(it) }
-                val locations = appContainer.locationRepository.getLocations().filter { it.folderId == fid }.map { VaultItem.LocationItem(it) }
-                val files = getFilesUseCase().filter { it.folderId == fid }.map { VaultItem.FileItem(it) }
-                folders + locations + files
+            try {
+                val result = withContext(Dispatchers.IO) {
+                    val fid = currentFolder?.id
+                    val folders = appContainer.folderRepository.getFolders()
+                        .filter { it.parentId == fid }
+                        .map { VaultItem.FolderItem(it) }
+                    val locations = appContainer.locationRepository.getLocations()
+                        .filter { it.folderId == fid }
+                        .map { VaultItem.LocationItem(it) }
+                    val files = getFilesUseCase()
+                        .filter { it.folderId == fid }
+                        .map { VaultItem.FileItem(it) }
+                    folders + locations + files
+                }
+                items = result
+            } catch (e: Exception) {
+                FileLogger.e("VaultViewModel", "Error loading items", e)
+                items = emptyList()
+            } finally {
+                isLoading = false
             }
-            // ⭐ Обновляем UI только когда данные готовы
-            items = result
-            isLoading = false // ⭐ Скрываем загрузку
         }
     }
 
@@ -74,71 +83,87 @@ class VaultViewModel(
     }
 
     fun createFolder(name: String) {
-        viewModelScope.launch { 
-            withContext(Dispatchers.IO) {
-                appContainer.folderRepository.addFolder(name, currentFolder?.id)
+        viewModelScope.launch {
+            try {
+                withContext(Dispatchers.IO) {
+                    appContainer.folderRepository.addFolder(name, currentFolder?.id)
+                }
+                loadItems()
+            } catch (e: Exception) {
+                FileLogger.e("VaultViewModel", "Error creating folder", e)
             }
-            loadItems() 
         }
     }
 
     fun deleteFolder(folder: VaultFolder) {
         viewModelScope.launch {
-            withContext(Dispatchers.IO) {
-                val allFolders = appContainer.folderRepository.getFolders()
-                val foldersToDeleteIds = mutableListOf(folder.id)
-                
-                fun collectSubfolders(parentId: String) {
-                    val children = allFolders.filter { it.parentId == parentId }
-                    children.forEach { child ->
-                        foldersToDeleteIds.add(child.id)
-                        collectSubfolders(child.id)
+            try {
+                withContext(Dispatchers.IO) {
+                    val allFolders = appContainer.folderRepository.getFolders()
+                    val foldersToDeleteIds = mutableListOf(folder.id)
+                    
+                    fun collectSubfolders(parentId: String) {
+                        val children = allFolders.filter { it.parentId == parentId }
+                        children.forEach { child ->
+                            foldersToDeleteIds.add(child.id)
+                            collectSubfolders(child.id)
+                        }
+                    }
+                    collectSubfolders(folder.id)
+
+                    val allFiles = getFilesUseCase()
+                    val filesToDelete = allFiles.filter { it.folderId in foldersToDeleteIds }
+
+                    val allLocations = appContainer.locationRepository.getLocations()
+                    val locationsToDelete = allLocations.filter { it.folderId in foldersToDeleteIds }
+
+                    filesToDelete.forEach { file ->
+                        repository.deleteFile(file.id)
+                    }
+
+                    locationsToDelete.forEach { location ->
+                        appContainer.locationRepository.deleteLocation(location.id)
+                    }
+
+                    foldersToDeleteIds.forEach { folderId ->
+                        appContainer.folderRepository.deleteFolder(folderId)
                     }
                 }
-                collectSubfolders(folder.id)
-
-                val allFiles = getFilesUseCase()
-                val filesToDelete = allFiles.filter { it.folderId in foldersToDeleteIds }
-
-                val allLocations = appContainer.locationRepository.getLocations()
-                val locationsToDelete = allLocations.filter { it.folderId in foldersToDeleteIds }
-
-                filesToDelete.forEach { file ->
-                    repository.deleteFile(file.id)
+                
+                if (currentFolder?.id == folder.id) {
+                    navigateUpFolder()
+                } else {
+                    loadItems()
                 }
-
-                locationsToDelete.forEach { location ->
-                    appContainer.locationRepository.deleteLocation(location.id)
-                }
-
-                foldersToDeleteIds.forEach { folderId ->
-                    appContainer.folderRepository.deleteFolder(folderId)
-                }
-            }
-            
-            if (currentFolder?.id == folder.id) {
-                navigateUpFolder()
-            } else {
-                loadItems()
+            } catch (e: Exception) {
+                FileLogger.e("VaultViewModel", "Error deleting folder", e)
             }
         }
     }
 
     fun deleteFile(file: VaultFile) {
-        viewModelScope.launch { 
-            withContext(Dispatchers.IO) {
-                repository.deleteFile(file.id)
+        viewModelScope.launch {
+            try {
+                withContext(Dispatchers.IO) {
+                    repository.deleteFile(file.id)
+                }
+                loadItems()
+            } catch (e: Exception) {
+                FileLogger.e("VaultViewModel", "Error deleting file", e)
             }
-            loadItems() 
         }
     }
 
     fun deleteLocation(id: String) {
-        viewModelScope.launch { 
-            withContext(Dispatchers.IO) {
-                appContainer.locationRepository.deleteLocation(id)
+        viewModelScope.launch {
+            try {
+                withContext(Dispatchers.IO) {
+                    appContainer.locationRepository.deleteLocation(id)
+                }
+                loadItems()
+            } catch (e: Exception) {
+                FileLogger.e("VaultViewModel", "Error deleting location", e)
             }
-            loadItems() 
         }
     }
 
@@ -163,15 +188,29 @@ class VaultViewModel(
     fun moveToFolder(folder: VaultFolder?) {
         val item = itemToMove ?: return
         viewModelScope.launch {
-            withContext(Dispatchers.IO) {
-                when (item) {
-                    is VaultItem.FileItem -> repository.moveFileToFolder(item.file.id, folder?.id)
-                    is VaultItem.LocationItem -> appContainer.locationRepository.moveLocationToFolder(item.location.id, folder?.id)
-                    is VaultItem.FolderItem -> { }
+            try {
+                withContext(Dispatchers.IO) {
+                    // ⭐ Добавлена else ветка для избежания exhaustive check проблем в релизе
+                    when (item) {
+                        is VaultItem.FileItem -> {
+                            repository.moveFileToFolder(item.file.id, folder?.id)
+                        }
+                        is VaultItem.LocationItem -> {
+                            appContainer.locationRepository.moveLocationToFolder(item.location.id, folder?.id)
+                        }
+                        is VaultItem.FolderItem -> {
+                            // Папки не перемещаем через этот метод
+                        }
+                        else -> {
+                            FileLogger.w("VaultViewModel", "Unknown VaultItem type in moveToFolder")
+                        }
+                    }
                 }
+                itemToMove = null
+                loadItems()
+            } catch (e: Exception) {
+                FileLogger.e("VaultViewModel", "Error in moveToFolder", e)
             }
-            itemToMove = null
-            loadItems()
         }
     }
 
@@ -179,15 +218,29 @@ class VaultViewModel(
         val item = itemToMove ?: return
         val parentId = currentFolder?.parentId
         viewModelScope.launch {
-            withContext(Dispatchers.IO) {
-                when (item) {
-                    is VaultItem.FileItem -> repository.moveFileToFolder(item.file.id, parentId)
-                    is VaultItem.LocationItem -> appContainer.locationRepository.moveLocationToFolder(item.location.id, parentId)
-                    is VaultItem.FolderItem -> { }
+            try {
+                withContext(Dispatchers.IO) {
+                    // ⭐ Добавлена else ветка для избежания exhaustive check проблем в релизе
+                    when (item) {
+                        is VaultItem.FileItem -> {
+                            repository.moveFileToFolder(item.file.id, parentId)
+                        }
+                        is VaultItem.LocationItem -> {
+                            appContainer.locationRepository.moveLocationToFolder(item.location.id, parentId)
+                        }
+                        is VaultItem.FolderItem -> {
+                            // Папки не перемещаем через этот метод
+                        }
+                        else -> {
+                            FileLogger.w("VaultViewModel", "Unknown VaultItem type in moveToParentFolder")
+                        }
+                    }
                 }
+                itemToMove = null
+                loadItems()
+            } catch (e: Exception) {
+                FileLogger.e("VaultViewModel", "Error in moveToParentFolder", e)
             }
-            itemToMove = null
-            loadItems()
         }
     }
 }
