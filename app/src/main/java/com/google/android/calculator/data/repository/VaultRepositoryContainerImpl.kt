@@ -6,7 +6,6 @@ import com.google.android.calculator.data.container.VaultContainer
 import com.google.android.calculator.domain.model.VaultFile
 import com.google.android.calculator.domain.repository.VaultRepository
 import com.google.android.calculator.utils.FileLogger
-import com.google.android.calculator.utils.VaultManager
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -19,9 +18,6 @@ class VaultRepositoryContainerImpl(
 ) : VaultRepository {
 
     private val mutex = Mutex()
-
-    private fun password(): String =
-        VaultManager.activeSessionPin ?: throw IllegalStateException("Хранилище заблокировано")
 
     override suspend fun getFiles(): List<VaultFile> = mutex.withLock {
         container.listEntries().map { e ->
@@ -56,7 +52,6 @@ class VaultRepositoryContainerImpl(
         folderId: String?
     ): Result<String> = mutex.withLock {
         try {
-            val pin = password()
             val id = System.currentTimeMillis().toString() + "_" + (System.nanoTime() % 1_000_000)
             val temp = File.createTempFile("vault_in_", ".tmp", context.cacheDir)
             try {
@@ -64,7 +59,7 @@ class VaultRepositoryContainerImpl(
                     temp.outputStream().use { out -> ins.copyTo(out) }
                 } ?: return@withLock Result.failure(Exception("Cannot open file"))
 
-                container.putEntry(id, originalName, mimeType, folderId, temp, pin).getOrThrow()
+                container.putEntry(id, originalName, mimeType, folderId, temp).getOrThrow()
                 Result.success(id)
             } finally {
                 temp.delete()
@@ -77,7 +72,7 @@ class VaultRepositoryContainerImpl(
 
     override suspend fun deleteFile(fileId: String): Result<Unit> = mutex.withLock {
         try {
-            container.removeEntry(fileId, password())
+            container.removeEntry(fileId)
         } catch (e: Exception) {
             FileLogger.e("VaultContainerRepo", "deleteFile failed", e)
             Result.failure(e)
@@ -86,9 +81,8 @@ class VaultRepositoryContainerImpl(
 
     override suspend fun decryptToTempFile(encryptedFileName: String): File? = withContext(Dispatchers.IO) {
         try {
-            val pin = password()
             val outFile = File.createTempFile("vault_out_", ".tmp", context.cacheDir)
-            container.getEntry(encryptedFileName, outFile, pin).getOrThrow()
+            container.getEntry(encryptedFileName, outFile).getOrThrow()
             outFile
         } catch (e: Exception) {
             FileLogger.e("VaultContainerRepo", "decryptToTempFile failed", e)
@@ -98,10 +92,9 @@ class VaultRepositoryContainerImpl(
 
     override suspend fun moveFilesToFolder(fromFolderId: String, toFolderId: String?): Result<Unit> = mutex.withLock {
         try {
-            val pin = password()
             val entries = container.listEntries()
             entries.filter { it.folderId == fromFolderId }.forEach {
-                container.moveEntry(it.id, toFolderId, pin)
+                container.moveEntry(it.id, toFolderId)
             }
             Result.success(Unit)
         } catch (e: Exception) {
@@ -112,7 +105,7 @@ class VaultRepositoryContainerImpl(
 
     override suspend fun moveFileToFolder(fileId: String, targetFolderId: String?): Result<Unit> = mutex.withLock {
         try {
-            container.moveEntry(fileId, targetFolderId, password())
+            container.moveEntry(fileId, targetFolderId)
         } catch (e: Exception) {
             FileLogger.e("VaultContainerRepo", "moveFileToFolder failed", e)
             Result.failure(e)

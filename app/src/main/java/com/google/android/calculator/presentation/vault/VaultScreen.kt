@@ -268,7 +268,16 @@ fun VaultScreen(
                 }
                 viewModel.items.isEmpty() && viewModel.itemToMove == null -> {
                     Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                        Text(stringResource(R.string.vault_empty), color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.bodyLarge)
+                        if (viewModel.isLoading) {
+                            // ⭐ Показываем индикатор, пока фоновый поток вычисляет ключ и читает данные
+                            CircularProgressIndicator()
+                        } else {
+                            Text(
+                                stringResource(R.string.vault_empty), 
+                                color = MaterialTheme.colorScheme.onSurfaceVariant, 
+                                style = MaterialTheme.typography.bodyLarge
+                            )
+                        }
                     }
                 }
                 else -> {

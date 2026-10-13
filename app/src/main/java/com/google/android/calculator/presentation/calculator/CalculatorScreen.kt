@@ -29,7 +29,11 @@ import com.google.android.calculator.di.AppContainer
 @Composable
 fun CalculatorScreen(appContainer: AppContainer, onNavigateToVault: () -> Unit) {
     val viewModel = remember {
-        CalculatorViewModel(appContainer, onNavigateToVault)
+        CalculatorViewModel(
+            checkPinUseCase = appContainer.checkPinUseCase,
+            onVaultOpened = onNavigateToVault,
+            appContainer = appContainer
+        )
     }
 
     // === Палитра в стиле Google Calculator ===
@@ -152,14 +156,14 @@ fun CalculatorScreen(appContainer: AppContainer, onNavigateToVault: () -> Unit) 
                 )
             }
 
-            //if (viewModel.pinHintVisible) {
-            //    Text(
-            //        stringResource(R.string.calc_hint_long_press),
-            //        color = MaterialTheme.colorScheme.error,
-            //        fontSize = 12.sp,
-            //        modifier = Modifier.padding(start = 24.dp, bottom = 4.dp)
-            //    )
-            //}
+            if (viewModel.pinHintVisible) {
+                Text(
+                    stringResource(R.string.calc_hint_long_press),
+                    color = MaterialTheme.colorScheme.error,
+                    fontSize = 12.sp,
+                    modifier = Modifier.padding(start = 24.dp, bottom = 4.dp)
+                )
+            }
 
             // === Шеврон научного режима ===
             Row(Modifier.fillMaxWidth().padding(start = 12.dp)) {
@@ -260,6 +264,177 @@ fun CalculatorScreen(appContainer: AppContainer, onNavigateToVault: () -> Unit) 
                         contentAlignment = Alignment.Center
                     ) {
                         Text("=", color = textOnEq, fontSize = 28.sp, fontWeight = FontWeight.Medium)
+                    }
+                }
+            }
+        }
+
+        // ⭐ ОВЕРЛЕЙ РАЗБЛОКИРОВКИ ХРАНИЛИЩА
+        if (viewModel.isUnlocking) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(Color.Black.copy(alpha = 0.55f))
+                    .pointerInput(Unit) { detectTapGestures(onTap = { }, onPress = { }) },
+                contentAlignment = Alignment.Center
+            ) {
+                Surface(
+                    shape = RoundedCornerShape(24.dp),
+                    color = bg,
+                    shadowElevation = 8.dp
+                ) {
+                    Column(
+                        modifier = Modifier.padding(horizontal = 36.dp, vertical = 28.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally
+                    ) {
+                        Icon(
+                            Icons.Default.LockOpen,
+                            null,
+                            tint = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.size(36.dp)
+                        )
+                        Spacer(Modifier.height(12.dp))
+                        Text(
+                            "✅ PIN принят",
+                            color = textMain,
+                            fontSize = 20.sp,
+                            fontWeight = FontWeight.Medium
+                        )
+                        Spacer(Modifier.height(6.dp))
+                        Text(
+                            "Расшифровка хранилища…",
+                            color = textMuted,
+                            fontSize = 14.sp
+                        )
+                        Spacer(Modifier.height(18.dp))
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(28.dp),
+                            strokeWidth = 3.dp,
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                    }
+                }
+            }
+        }
+
+        // ⭐ ОВЕРЛЕЙ ОШИБКИ РАЗБЛОКИРОВКИ
+        viewModel.unlockError?.let { error ->
+            if (!viewModel.needsContainerReset) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .background(Color.Black.copy(alpha = 0.55f))
+                        .pointerInput(Unit) { detectTapGestures(onTap = { }, onPress = { }) },
+                    contentAlignment = Alignment.Center
+                ) {
+                    Surface(
+                        shape = RoundedCornerShape(24.dp),
+                        color = bg,
+                        shadowElevation = 8.dp
+                    ) {
+                        Column(
+                            modifier = Modifier.padding(horizontal = 36.dp, vertical = 28.dp),
+                            horizontalAlignment = Alignment.CenterHorizontally
+                        ) {
+                            Icon(
+                                Icons.Default.Error,
+                                null,
+                                tint = MaterialTheme.colorScheme.error,
+                                modifier = Modifier.size(36.dp)
+                            )
+                            Spacer(Modifier.height(12.dp))
+                            Text(
+                                "Ошибка разблокировки",
+                                color = textMain,
+                                fontSize = 20.sp,
+                                fontWeight = FontWeight.Medium
+                            )
+                            Spacer(Modifier.height(8.dp))
+                            Text(
+                                error,
+                                color = MaterialTheme.colorScheme.error,
+                                fontSize = 14.sp,
+                                textAlign = TextAlign.Center,
+                                maxLines = 3
+                            )
+                            Spacer(Modifier.height(18.dp))
+                            Button(
+                                onClick = { viewModel.clearUnlockError() },
+                                colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)
+                            ) {
+                                Text("Закрыть", color = textOnEq)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // ⭐ ОВЕРЛЕЙ ПРЕДЛОЖЕНИЯ СБРОСИТЬ КОНТЕЙНЕР (при несовместимости форматов)
+        if (viewModel.needsContainerReset) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(Color.Black.copy(alpha = 0.55f))
+                    .pointerInput(Unit) { detectTapGestures(onTap = { }, onPress = { }) },
+                contentAlignment = Alignment.Center
+            ) {
+                Surface(
+                    shape = RoundedCornerShape(24.dp),
+                    color = bg,
+                    shadowElevation = 8.dp
+                ) {
+                    Column(
+                        modifier = Modifier.padding(horizontal = 36.dp, vertical = 28.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally
+                    ) {
+                        Icon(
+                            Icons.Default.Warning,
+                            null,
+                            tint = MaterialTheme.colorScheme.error,
+                            modifier = Modifier.size(42.dp)
+                        )
+                        Spacer(Modifier.height(12.dp))
+                        Text(
+                            "Старый формат контейнера",
+                            color = textMain,
+                            fontSize = 20.sp,
+                            fontWeight = FontWeight.Medium
+                        )
+                        Spacer(Modifier.height(8.dp))
+                        Text(
+                            "Контейнер зашифрован старым методом.\n\n⚠️ Все данные в нём будут удалены.\nСоздать новый контейнер?",
+                            color = textMuted,
+                            fontSize = 14.sp,
+                            textAlign = TextAlign.Center
+                        )
+                        Spacer(Modifier.height(20.dp))
+                        Row(
+                            horizontalArrangement = Arrangement.spacedBy(12.dp)
+                        ) {
+                            OutlinedButton(
+                                onClick = { viewModel.cancelReset() },
+                                colors = ButtonDefaults.outlinedButtonColors(
+                                    contentColor = textMain
+                                )
+                            ) {
+                                Text("Отмена")
+                            }
+                            Button(
+                                onClick = { viewModel.resetContainer() },
+                                colors = ButtonDefaults.buttonColors(
+                                    containerColor = MaterialTheme.colorScheme.error
+                                )
+                            ) {
+                                Icon(
+                                    Icons.Default.DeleteForever,
+                                    null,
+                                    modifier = Modifier.size(18.dp)
+                                )
+                                Spacer(Modifier.width(8.dp))
+                                Text("Сбросить", color = Color.White)
+                            }
+                        }
                     }
                 }
             }

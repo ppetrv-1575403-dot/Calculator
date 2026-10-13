@@ -32,7 +32,6 @@ object VaultManager {
     var currentSlotId: String = REAL_ID
         private set
 
-    // ⭐ PIN-код текущей активной сессии — нужен для шифрования/дешифрования
     var activeSessionPin: String? = null
         private set
 
@@ -87,6 +86,12 @@ object VaultManager {
         return slot
     }
 
+    // ⭐ Метод для явной установки PIN сессии (для миграции со старой системы)
+    fun setSessionPin(pin: String) {
+        activeSessionPin = pin
+        FileLogger.i("Vault", "Session PIN set explicitly")
+    }
+
     fun authenticate(pin: String): VaultMode? =
         authenticateSlot(pin)?.let { if (it.isReal) VaultMode.REAL else VaultMode.DECOY }
 
@@ -99,7 +104,6 @@ object VaultManager {
         enterSlot(if (mode == VaultMode.REAL) REAL_ID else decoySlots().firstOrNull()?.id ?: REAL_ID)
     }
 
-    /** Блокировка хранилища: очищает PIN и сбрасывает слот */
     fun lock() {
         activeSessionPin = null
         currentSlotId = REAL_ID

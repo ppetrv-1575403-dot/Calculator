@@ -117,14 +117,15 @@ fun SettingsScreen(
         }
     ) { padding ->
         LazyColumn(
-            Modifier.fillMaxSize().padding(padding),
+            Modifier.navigationBarsPadding().fillMaxSize().padding(padding),
             verticalArrangement = Arrangement.spacedBy(4.dp)
         ) {
             item { SectionTitle("Безопасность") }
+
             item {
                 ListItem(
                     headlineContent = { Text("Сменить PIN-код") },
-                    supportingContent = { Text("Код доступа текущего хранилища") },
+                    supportingContent = { Text("Код доступа к хранилищу") },
                     leadingContent = { Icon(Icons.Default.Lock, null, tint = MaterialTheme.colorScheme.primary) },
                     modifier = Modifier.clickable { showChangePinDialog = true }
                 )
@@ -222,15 +223,17 @@ fun SettingsScreen(
                 )
             }
 
-            item { HorizontalDivider(Modifier.padding(vertical = 8.dp)) }
-            item { SectionTitle("Карты и навигация") }
-            item {
-                ListItem(
-                    headlineContent = { Text("Оффлайн-карты") },
-                    supportingContent = { Text("Загрузка карт и графов дорог") },
-                    leadingContent = { Icon(Icons.Default.Map, null, tint = MaterialTheme.colorScheme.primary) },
-                    modifier = Modifier.clickable { onOpenOfflineMaps() }
-                )
+            if (!isDecoyMode) {
+                item { HorizontalDivider(Modifier.padding(vertical = 8.dp)) }
+                item { SectionTitle("Карты и навигация") }
+                item {
+                    ListItem(
+                        headlineContent = { Text("Оффлайн-карты") },
+                        supportingContent = { Text("Загрузка карт и графов дорог") },
+                        leadingContent = { Icon(Icons.Default.Map, null, tint = MaterialTheme.colorScheme.primary) },
+                        modifier = Modifier.clickable { onOpenOfflineMaps() }
+                    )
+                }
             }
 
             item { HorizontalDivider(Modifier.padding(vertical = 8.dp)) }

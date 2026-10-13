@@ -4,7 +4,6 @@ import com.google.android.calculator.data.container.VaultContainer
 import com.google.android.calculator.domain.model.SavedLocation
 import com.google.android.calculator.domain.repository.LocationRepository
 import com.google.android.calculator.utils.FileLogger
-import com.google.android.calculator.utils.VaultManager
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 
@@ -15,12 +14,9 @@ class LocationRepositoryContainerImpl(
     private val mutex = Mutex()
     private val META_KEY = "locations"
 
-    private fun password(): String =
-        VaultManager.activeSessionPin ?: throw IllegalStateException("Хранилище заблокировано")
-
     private suspend fun load(): MutableList<SavedLocation> {
         return try {
-            container.getMetaLines(META_KEY, password()).mapNotNull { line ->
+            container.getMetaLines(META_KEY).mapNotNull { line ->
                 val p = line.split("|||")
                 if (p.size >= 6) SavedLocation(
                     p[0], p[1], p[2],
@@ -38,7 +34,7 @@ class LocationRepositoryContainerImpl(
     private suspend fun save(list: List<SavedLocation>) {
         container.putMetaLines(META_KEY, list.map {
             "${it.id}|||${it.name}|||${it.description.replace("\n", " ")}|||${it.latitude}|||${it.longitude}|||${it.photoId ?: ""}|||${it.folderId ?: ""}"
-        }, password())
+        })
     }
 
     override suspend fun getLocations(): List<SavedLocation> = mutex.withLock { load() }

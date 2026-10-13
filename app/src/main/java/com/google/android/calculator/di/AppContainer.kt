@@ -44,20 +44,44 @@ class AppContainer(context: Context) {
     private val locationRepoCache = mutableMapOf<String, LocationRepository>()
     private val folderRepoCache = mutableMapOf<String, FolderRepository>()
     private val containerCache = mutableMapOf<String, VaultContainer>()
+    
+    private val cacheLock = Any()
 
     private fun containerForSlot(slotId: String): VaultContainer? {
         if (!VaultManager.containerEnabled(slotId)) return null
         val file = VaultManager.containerFile(slotId) ?: return null
-        val password = VaultManager.activeSessionPin ?: return null
-        return containerCache.getOrPut(slotId) {
-            val c = VaultContainer(file, cryptoManager)
-            try {
-                if (!c.exists()) c.create(password) else c.open(password)
-            } catch (e: Exception) {
-                FileLogger.e("AppContainer", "Container open failed for slot $slotId", e)
-                try { c.create(password) } catch (e2: Exception) { /* fallback */ }
+        val password = VaultManager.activeSessionPin ?: run {
+            FileLogger.e("AppContainer", "No active session PIN for slot $slotId")
+            return null
+        }
+        
+        synchronized(cacheLock) {
+            return containerCache.getOrPut(slotId) {
+                val c = VaultContainer(file, cryptoManager)
+                try {
+                    if (!c.exists()) {
+                        FileLogger.i("AppContainer", "Creating new container for slot $slotId")
+                        c.create(password)
+                    } else {
+                        FileLogger.i("AppContainer", "Opening existing container for slot $slotId")
+                        c.open(password)
+                    }
+                } catch (e: Exception) {
+                    FileLogger.e("AppContainer", "Container open failed for slot $slotId: ${e.message}", e)
+                    
+                    // ⭐ АВТОМАТИЧЕСКИЙ СБРОС ПРИ НЕСОВМЕСТИМОСТИ ФОРМАТОВ
+                    // Если файл зашифрован старым методом (Keystore), новый код не сможет его прочитать.
+                    // Мы удаляем его и создаём новый совместимый контейнер.
+                    if (e.message?.contains("AEADBadTagException") == true || e.message?.contains("BAD_DECRYPT") == true) {
+                        FileLogger.w("AppContainer", "Incompatible or corrupted container detected. Resetting...")
+                        file.delete()
+                        c.create(password)
+                    } else {
+                        throw e
+                    }
+                }
+                c
             }
-            c
         }
     }
 
@@ -105,10 +129,12 @@ class AppContainer(context: Context) {
     }
 
     fun invalidateCacheForSlot(slotId: String) {
-        containerCache.remove(slotId)
-        vaultRepoCache.remove(slotId)
-        locationRepoCache.remove(slotId)
-        folderRepoCache.remove(slotId)
+        synchronized(cacheLock) {
+            containerCache.remove(slotId)
+            vaultRepoCache.remove(slotId)
+            locationRepoCache.remove(slotId)
+            folderRepoCache.remove(slotId)
+        }
         FileLogger.i("AppContainer", "Cache invalidated for slot: $slotId")
     }
 

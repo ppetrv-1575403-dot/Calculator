@@ -179,7 +179,7 @@ fun ContainerSettingsScreen(
                                 }
                                 val container = VaultContainer(containerFile!!, appContainer.cryptoManager)
                                 container.open(pin)
-                                container.compact(pin)
+                                container.compact() // ⭐ Убран аргумент pin
                                 statusMessage = "✅ Упакован (освобождено место)"
                             } catch (e: Exception) {
                                 statusMessage = "❌ ${e.message}"

@@ -4,15 +4,20 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.lifecycle.ViewModel
+import androidx.lifecycle.viewModelScope
 import com.google.android.calculator.di.AppContainer
 import com.google.android.calculator.domain.usecase.CheckPinUseCase
 import com.google.android.calculator.utils.FileLogger
 import com.google.android.calculator.utils.VaultManager
-import com.google.android.calculator.utils.VaultMode
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 class CalculatorViewModel(
-    private val appContainer: AppContainer,
-    private val onVaultOpened: () -> Unit
+    private val checkPinUseCase: CheckPinUseCase,
+    private val onVaultOpened: () -> Unit,
+    private val appContainer: AppContainer
 ) : ViewModel() {
 
     var display by mutableStateOf(""); private set
@@ -22,8 +27,9 @@ class CalculatorViewModel(
     var pinHintVisible by mutableStateOf(false); private set
     var angleInDegrees by mutableStateOf(true); private set
     var isInverseMode by mutableStateOf(false); private set
-
-    // === Ввод ===
+    var isUnlocking by mutableStateOf(false); private set
+    var unlockError by mutableStateOf<String?>(null); private set
+    var needsContainerReset by mutableStateOf(false); private set
 
     fun onDigitPressed(d: String) {
         if (isError) onClear()
@@ -43,7 +49,6 @@ class CalculatorViewModel(
         if (display.isNotEmpty()) display += op
     }
 
-    /** Умная кнопка "()" — сама решает, открыть или закрыть скобку */
     fun onParenthesisPressed() {
         if (isError) onClear()
         val open = display.count { it == '(' }
@@ -70,10 +75,8 @@ class CalculatorViewModel(
         display = ""; history = ""; isError = false; pinHintVisible = false
     }
 
-    // === Вычисление ===
-
     fun onEqualsPressed() {
-        if (display.isEmpty()) return
+        if (display.isEmpty() || isUnlocking) return
         try {
             val expr = display
             val result = Parser(expr, angleInDegrees).parse()
@@ -88,32 +91,121 @@ class CalculatorViewModel(
     }
 
     fun onEqualsLongPressed() {
+        if (isUnlocking) return
         if (display.isEmpty()) { pinHintVisible = true; return }
         val entered = display.trim()
 
         val slot = VaultManager.authenticateSlot(entered)
         if (slot != null) {
-            FileLogger.i("Vault", "Unlock successful: slotId=${slot.id}")
-            VaultManager.enterSlot(slot.id)
-            appContainer.invalidateCacheForSlot(slot.id)
-            onVaultOpened()
-            onClear()
+            startUnlock(slot.id)
             return
         }
 
-        // ⭐ 4. Fallback: проверка старого основного PIN (для совместимости)
-        if (appContainer.checkPinUseCase(entered)) {
+        if (checkPinUseCase(entered)) {
             if (!VaultManager.hasMainPin()) {
                 VaultManager.setMainPin(entered)
                 FileLogger.i("Vault", "Main PIN migrated from PinRepository")
             }
-            VaultManager.enterSlot(VaultManager.REAL_ID)
-            appContainer.invalidateCacheForSlot(VaultManager.REAL_ID)
-            onVaultOpened()
-            onClear()
+            VaultManager.setSessionPin(entered)
+            startUnlock(VaultManager.REAL_ID)
         } else {
             pinHintVisible = true
         }
+    }
+
+    private fun startUnlock(slotId: String) {
+        FileLogger.i("Vault", "Unlock accepted: slotId=$slotId")
+        isUnlocking = true
+        unlockError = null
+        pinHintVisible = false
+        VaultManager.enterSlot(slotId)
+        appContainer.invalidateCacheForSlot(slotId)
+
+        viewModelScope.launch {
+            val start = System.currentTimeMillis()
+            try {
+                withContext(Dispatchers.IO) {
+                    FileLogger.d("Vault", "Warming up repositories for slot $slotId")
+                    appContainer.vaultRepositoryForSlot(slotId)
+                    appContainer.locationRepositoryForSlot(slotId)
+                    appContainer.folderRepositoryForSlot(slotId)
+                    FileLogger.d("Vault", "Repositories warmed up successfully")
+                }
+                val elapsed = System.currentTimeMillis() - start
+                if (elapsed < 250) delay(250 - elapsed)
+
+                FileLogger.i("Vault", "Unlock complete in ${System.currentTimeMillis() - start} ms")
+                onVaultOpened()
+            } catch (e: Exception) {
+                FileLogger.e("Calculator", "Unlock failed: ${e.message}", e)
+                
+                // ⭐ Проверяем, это ошибка совместимости контейнера
+                if (e.message?.contains("AEADBadTagException") == true || 
+                    e.message?.contains("BAD_DECRYPT") == true) {
+                    unlockError = "Контейнер зашифрован старым методом"
+                    needsContainerReset = true
+                } else {
+                    unlockError = when {
+                        e.message?.contains("Container not unlocked") == true -> 
+                            "Ошибка: PIN сессии не установлен"
+                        e.message?.contains("Файл не является контейнером") == true -> 
+                            "Ошибка: файл контейнера повреждён"
+                        e.message?.contains("Неподдерживаемая версия") == true -> 
+                            "Ошибка: несовместимая версия контейнера"
+                        e.message?.contains("No active session PIN") == true -> 
+                            "Ошибка: PIN не сохранён в сессии"
+                        else -> "Ошибка: ${e.message ?: "неизвестная ошибка"}"
+                    }
+                    needsContainerReset = false
+                }
+            } finally {
+                if (unlockError == null) {
+                    isUnlocking = false
+                    onClear()
+                } else {
+                    isUnlocking = false
+                }
+            }
+        }
+    }
+
+    // ⭐ Сброс контейнера и создание нового
+    fun resetContainer() {
+        viewModelScope.launch {
+            try {
+                withContext(Dispatchers.IO) {
+                    val slotId = VaultManager.currentSlotId
+                    val containerFile = VaultManager.containerFile(slotId)
+                    if (containerFile != null && containerFile.exists()) {
+                        FileLogger.w("Vault", "Deleting old container: ${containerFile.absolutePath}")
+                        containerFile.delete()
+                    }
+                    // Пересоздаём репозитории с новым контейнером
+                    appContainer.invalidateCacheForSlot(slotId)
+                    appContainer.vaultRepositoryForSlot(slotId)
+                    appContainer.locationRepositoryForSlot(slotId)
+                    appContainer.folderRepositoryForSlot(slotId)
+                    FileLogger.i("Vault", "New container created successfully")
+                }
+                needsContainerReset = false
+                unlockError = null
+                onVaultOpened()
+            } catch (e: Exception) {
+                FileLogger.e("Vault", "Failed to reset container", e)
+                unlockError = "Не удалось создать новый контейнер: ${e.message}"
+                needsContainerReset = false
+            }
+        }
+    }
+
+    fun cancelReset() {
+        needsContainerReset = false
+        unlockError = null
+    }
+
+    fun clearUnlockError() {
+        unlockError = null
+        needsContainerReset = false
     }
 
     fun useHistoryEntry(entry: String) {
@@ -126,12 +218,8 @@ class CalculatorViewModel(
         history = ""
     }
 
-    // === Режимы ===
-
     fun toggleAngleMode() { angleInDegrees = !angleInDegrees }
     fun toggleInverseMode() { isInverseMode = !isInverseMode }
-
-    // === Научные функции ===
 
     fun onSinePressed() {
         if (isError) onClear()
@@ -196,8 +284,6 @@ class CalculatorViewModel(
         if (v.isNaN() || v.isInfinite()) throw ArithmeticException()
         return if (v % 1.0 == 0.0) v.toLong().toString() else v.toString()
     }
-
-    // === Парсер ===
 
     private class Parser(private val s: String, private val deg: Boolean) {
         private var i = 0
