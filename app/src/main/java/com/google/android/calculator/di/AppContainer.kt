@@ -163,4 +163,11 @@ class AppContainer(context: Context) {
     val folderPickerResult: StateFlow<String?> = _folderPickerResult
     fun setFolderPickerResult(path: String?) { _folderPickerResult.value = path }
     fun resetFolderPickerResult() { _folderPickerResult.value = null }
+
+    // ⭐ Возвращает текущий разблокированный контейнер для ExoPlayer
+    fun getActiveContainer(): VaultContainer? {
+        val slotId = VaultManager.currentSlotId
+        if (!VaultManager.containerEnabled(slotId)) return null
+        return containerCache[slotId]
+    }
 }

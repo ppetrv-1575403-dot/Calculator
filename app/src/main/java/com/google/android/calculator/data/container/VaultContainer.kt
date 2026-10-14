@@ -21,21 +21,32 @@ class VaultContainer(
         val mime: String,
         val folderId: String?,
         val offset: Long,
-        val length: Long
+        val length: Long,
+        val encryptionMode: Int = ENCRYPTION_GCM
     )
 
     private val mutex = Mutex()
     private var index = mutableListOf<Entry>()
     private var lastKnownModified: Long = 0L
     private var sessionKey: SecretKey? = null
+    
+    // ⭐ Кэш IV для каждой записи (entryId -> IV)
+    private val ivCache = mutableMapOf<String, ByteArray>()
 
     companion object {
         private const val MAGIC = "CVLT"
-        private const val VERSION = 2
+        private const val VERSION = 3
         private const val SALT_SIZE = 16
-        private const val HEADER_SIZE = 32L // 4 (MAGIC) + 4 (VERSION) + 16 (SALT) + 8 (OFFSET)
+        private const val HEADER_SIZE = 32L
         private const val META_PREFIX = "__meta_"
         private const val BUF = 64 * 1024
+        
+        const val ENCRYPTION_GCM = 0
+        const val ENCRYPTION_CTR = 1
+        
+        fun needsCTR(mimeType: String): Boolean {
+            return mimeType.startsWith("video/") || mimeType.startsWith("audio/")
+        }
     }
 
     private fun requireKey(): SecretKey = sessionKey ?: throw IllegalStateException("Container not unlocked")
@@ -58,15 +69,14 @@ class VaultContainer(
         index = mutableListOf()
         appendIndex()
         lastKnownModified = containerFile.lastModified()
-        FileLogger.i("VaultContainer", "Created new container: ${containerFile.name}")
+        FileLogger.i("VaultContainer", "Created new container v$VERSION: ${containerFile.name}")
     }
 
     fun open(password: String) {
         val currentModified = containerFile.lastModified()
-        FileLogger.d("VaultContainer", "Opening container: ${containerFile.name}, modified=$currentModified, lastKnown=$lastKnownModified, indexEmpty=${index.isEmpty()}")
+        FileLogger.d("VaultContainer", "Opening container: ${containerFile.name}, modified=$currentModified")
         
         if (currentModified != lastKnownModified || index.isEmpty()) {
-            FileLogger.d("VaultContainer", "Reading index from file")
             RandomAccessFile(containerFile, "r").use { raf ->
                 val magic = ByteArray(4); raf.readFully(magic)
                 require(String(magic) == MAGIC) { "Файл не является контейнером хранилища" }
@@ -79,18 +89,14 @@ class VaultContainer(
                 sessionKey = CryptoManager.deriveKey(password, salt)
 
                 val indexOffset = raf.readLong()
-                FileLogger.d("VaultContainer", "Index offset: $indexOffset")
                 raf.seek(indexOffset)
                 val len = raf.readLong()
-                FileLogger.d("VaultContainer", "Index length: $len")
                 val enc = ByteArray(len.toInt()); raf.readFully(enc)
                 index = decryptIndex(enc).toMutableList()
-                FileLogger.i("VaultContainer", "Loaded ${index.size} entries from container")
+                FileLogger.i("VaultContainer", "Loaded ${index.size} entries")
 
                 lastKnownModified = currentModified
             }
-        } else {
-            FileLogger.d("VaultContainer", "Using cached index (${index.size} entries)")
         }
     }
 
@@ -104,18 +110,34 @@ class VaultContainer(
         try {
             val key = requireKey()
             val salt = readSalt()
+            val useCTR = needsCTR(mime)
             val offset: Long; val length: Long
+            
             RandomAccessFile(containerFile, "rw").use { raf ->
                 raf.seek(raf.length())
                 offset = raf.filePointer
-                val out: OutputStream = RafOutputStream(raf)
-                crypto.encryptStreamWithKey(out, key, salt).use { cipherOut ->
-                    plaintext.inputStream().use { it.copyTo(cipherOut, BUF) }
+                
+                if (useCTR) {
+                    val tempOut = File.createTempFile("ctr_enc_", ".tmp", containerFile.parentFile)
+                    try {
+                        crypto.encryptCTRWithKey(plaintext, tempOut, key, salt)
+                        tempOut.inputStream().use { ins ->
+                            val out = RafOutputStream(raf)
+                            ins.copyTo(out, BUF)
+                        }
+                    } finally {
+                        tempOut.delete()
+                    }
+                } else {
+                    val out: OutputStream = RafOutputStream(raf)
+                    crypto.encryptStreamWithKey(out, key, salt).use { cipherOut ->
+                        plaintext.inputStream().use { it.copyTo(cipherOut, BUF) }
+                    }
                 }
                 length = raf.filePointer - offset
             }
             index.removeAll { it.id == id }
-            index.add(Entry(id, originalName, mime, folderId, offset, length))
+            index.add(Entry(id, originalName, mime, folderId, offset, length, if (useCTR) ENCRYPTION_CTR else ENCRYPTION_GCM))
             appendIndex()
             Result.success(Unit)
         } catch (e: Exception) {
@@ -130,18 +152,37 @@ class VaultContainer(
         try {
             val key = requireKey()
             val salt = readSalt()
+            val useCTR = needsCTR(mime)
             val offset: Long; val length: Long
+            
             RandomAccessFile(containerFile, "rw").use { raf ->
                 raf.seek(raf.length())
                 offset = raf.filePointer
-                val out: OutputStream = RafOutputStream(raf)
-                crypto.encryptStreamWithKey(out, key, salt).use { cipherOut ->
-                    cipherOut.write(bytes)
+                
+                if (useCTR) {
+                    val tempIn = File.createTempFile("ctr_in_", ".tmp", containerFile.parentFile)
+                    val tempOut = File.createTempFile("ctr_out_", ".tmp", containerFile.parentFile)
+                    try {
+                        tempIn.writeBytes(bytes)
+                        crypto.encryptCTRWithKey(tempIn, tempOut, key, salt)
+                        tempOut.inputStream().use { ins ->
+                            val out = RafOutputStream(raf)
+                            ins.copyTo(out, BUF)
+                        }
+                    } finally {
+                        tempIn.delete()
+                        tempOut.delete()
+                    }
+                } else {
+                    val out: OutputStream = RafOutputStream(raf)
+                    crypto.encryptStreamWithKey(out, key, salt).use { cipherOut ->
+                        cipherOut.write(bytes)
+                    }
                 }
                 length = raf.filePointer - offset
             }
             index.removeAll { it.id == id }
-            index.add(Entry(id, originalName, mime, folderId, offset, length))
+            index.add(Entry(id, originalName, mime, folderId, offset, length, if (useCTR) ENCRYPTION_CTR else ENCRYPTION_GCM))
             appendIndex()
             Result.success(Unit)
         } catch (e: Exception) {
@@ -157,9 +198,20 @@ class VaultContainer(
             RandomAccessFile(containerFile, "r").use { raf ->
                 raf.seek(entry.offset)
                 val sliceStream: InputStream = BoundedInputStream(RafInputStream(raf), entry.length)
-                crypto.decryptStreamWithKey(sliceStream, key).use { plainIn ->
-                    outPlaintext.outputStream().buffered().use { out ->
-                        plainIn.copyTo(out, BUF)
+                
+                if (entry.encryptionMode == ENCRYPTION_CTR) {
+                    val tempEnc = File.createTempFile("ctr_dec_", ".tmp", containerFile.parentFile)
+                    try {
+                        tempEnc.outputStream().use { out -> sliceStream.copyTo(out) }
+                        crypto.decryptCTRWithKey(tempEnc, outPlaintext, key)
+                    } finally {
+                        tempEnc.delete()
+                    }
+                } else {
+                    crypto.decryptStreamWithKey(sliceStream, key).use { plainIn ->
+                        outPlaintext.outputStream().buffered().use { out ->
+                            plainIn.copyTo(out, BUF)
+                        }
                     }
                 }
             }
@@ -180,12 +232,104 @@ class VaultContainer(
                 raf.readFully(slice)
                 slice
             }
-            val plain = crypto.decryptToBytesWithKey(bytes, key)
+            
+            val plain = if (entry.encryptionMode == ENCRYPTION_CTR) {
+                val tempEnc = File.createTempFile("ctr_bytes_", ".tmp", containerFile.parentFile)
+                try {
+                    tempEnc.writeBytes(bytes)
+                    val tempOut = File.createTempFile("ctr_out_", ".tmp", containerFile.parentFile)
+                    try {
+                        crypto.decryptCTRWithKey(tempEnc, tempOut, key)
+                        tempOut.readBytes()
+                    } finally {
+                        tempOut.delete()
+                    }
+                } finally {
+                    tempEnc.delete()
+                }
+            } else {
+                crypto.decryptToBytesWithKey(bytes, key)
+            }
             Result.success(plain)
         } catch (e: Exception) {
             FileLogger.e("VaultContainer", "getEntryBytes failed: $id", e)
             Result.failure(e)
         }
+    }
+
+    /**
+     * ⭐ Чтение зашифрованного диапазона байт (для ExoPlayer DataSource).
+     */
+    fun readEncryptedBytes(offset: Long, length: Int): ByteArray {
+        val result = ByteArray(length)
+        RandomAccessFile(containerFile, "r").use { raf ->
+            raf.seek(offset)
+            val read = raf.read(result)
+            if (read < length) {
+                return result.copyOf(read)
+            }
+        }
+        return result
+    }
+
+    /**
+     * ⭐ Возвращает размер расшифрованных данных для записи.
+     */
+    fun getDecryptedSize(entry: Entry): Long {
+        return if (entry.encryptionMode == ENCRYPTION_CTR) {
+            maxOf(0L, entry.length - 32) // 32 байта = SALT (16) + IV (16)
+        } else {
+            entry.length
+        }
+    }
+
+    /**
+     * ⭐ Получить IV для записи (с кэшированием).
+     */
+    fun getEntryIV(entry: Entry): ByteArray {
+        return ivCache.getOrPut(entry.id) {
+            val iv = ByteArray(CryptoManager.IV_SIZE_CTR)
+            RandomAccessFile(containerFile, "r").use { raf ->
+                raf.seek(entry.offset + SALT_SIZE)
+                raf.readFully(iv)
+            }
+            iv
+        }
+    }
+
+    /**
+     * ⭐ Очистить кэш IV.
+     */
+    fun clearIVCache() {
+        ivCache.clear()
+    }
+
+    /**
+     * ⭐ Синхронное чтение и расшифровка диапазона байт (для ExoPlayer).
+     * Работает ТОЛЬКО для CTR (видео/аудио).
+     */
+    fun readDecryptedRangeSync(entry: Entry, offset: Long, length: Int): ByteArray {
+        if (entry.encryptionMode != ENCRYPTION_CTR) {
+            throw UnsupportedOperationException("Random access only supported for CTR (video/audio)")
+        }
+        
+        val key = sessionKey ?: throw IllegalStateException("Container not unlocked")
+        
+        // Проверка границ
+        val decryptedSize = getDecryptedSize(entry)
+        if (offset >= decryptedSize) {
+            return ByteArray(0)
+        }
+        
+        val actualLength = minOf(length.toLong(), decryptedSize - offset).toInt()
+        
+        // ⭐ Получаем IV из кэша (быстро, без чтения файла)
+        val iv = getEntryIV(entry)
+        
+        FileLogger.d("VaultContainer", "Reading CTR range: entry=${entry.id}, offset=$offset, length=$actualLength, entryOffset=${entry.offset}")
+        
+        // ⭐ Передаём IV в метод расшифровки
+        return crypto.decryptCTRRangeFromFile(containerFile, key, entry.offset, offset, actualLength, iv)
     }
 
     suspend fun removeEntry(id: String): Result<Unit> = mutex.withLock {
@@ -240,7 +384,7 @@ class VaultContainer(
                 val enc = encryptIndex(index, key, salt)
                 val off = out.filePointer
                 out.writeLong(enc.size.toLong()); out.write(enc)
-                out.seek(24) // ⭐ ИСПРАВЛЕНО: было 8, теперь 24 (смещение INDEX_OFFSET в заголовке)
+                out.seek(24)
                 out.writeLong(off)
             }
             containerFile.delete()
@@ -253,7 +397,7 @@ class VaultContainer(
     private fun readSalt(): ByteArray {
         val salt = ByteArray(SALT_SIZE)
         RandomAccessFile(containerFile, "r").use { raf ->
-            raf.seek(8) // Соль начинается с 8-го байта
+            raf.seek(8)
             raf.readFully(salt)
         }
         return salt
@@ -263,22 +407,20 @@ class VaultContainer(
         val key = requireKey()
         val salt = readSalt()
         val enc = encryptIndex(index, key, salt)
-        var off = 0L
         RandomAccessFile(containerFile, "rw").use { raf ->
             raf.seek(raf.length())
-            off = raf.filePointer
+            val off = raf.filePointer
             raf.writeLong(enc.size.toLong())
             raf.write(enc)
-            raf.seek(24) // ⭐ ИСПРАВЛЕНО: было 8, теперь 24 (чтобы не затирать соль!)
+            raf.seek(24)
             raf.writeLong(off)
         }
         lastKnownModified = containerFile.lastModified()
-        FileLogger.d("VaultContainer", "Appended index: ${index.size} entries, offset=$off, size=${enc.size}")
     }
 
     private fun encryptIndex(entries: List<Entry>, key: SecretKey, salt: ByteArray): ByteArray {
         val plain = entries.joinToString("\n") {
-            "${it.id}|||${it.originalName}|||${it.mime}|||${it.folderId ?: ""}|||${it.offset}|||${it.length}"
+            "${it.id}|||${it.originalName}|||${it.mime}|||${it.folderId ?: ""}|||${it.offset}|||${it.length}|||${it.encryptionMode}"
         }.toByteArray(StandardCharsets.UTF_8)
         val tmp = File.createTempFile("vc_idx", ".enc", containerFile.parentFile)
         try {
@@ -296,7 +438,8 @@ class VaultContainer(
                 p[0], p[1], p[2],
                 p[3].takeIf { it.isNotEmpty() },
                 p[4].toLongOrNull() ?: 0L,
-                p[5].toLongOrNull() ?: 0L
+                p[5].toLongOrNull() ?: 0L,
+                if (p.size >= 7) p[6].toIntOrNull() ?: ENCRYPTION_GCM else ENCRYPTION_GCM
             ) else null
         }
     }

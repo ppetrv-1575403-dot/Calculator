@@ -74,9 +74,18 @@ android {
 }
 
 dependencies {
+    // ... существующие зависимости ...
+    
+    // ⭐ ExoPlayer (Media3) для видео
+    implementation("androidx.media3:media3-exoplayer:1.4.1")
+    implementation("androidx.media3:media3-ui:1.4.1")
+    implementation("androidx.media3:media3-common:1.4.1")
+}
+
+dependencies {
     // Десугаринг — добавляет недостающие Java SE классы (javax.lang.model и т.д.)
     coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.0.4")
-    
+
     implementation("androidx.core:core-ktx:1.12.0")
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.7.0")
     implementation("androidx.lifecycle:lifecycle-process:2.7.0")
@@ -102,17 +111,22 @@ dependencies {
         // Исключаем проблемные транзитивные зависимости
         exclude(group = "com.fasterxml.jackson.dataformat", module = "jackson-dataformat-xml")
     }
-    
+
     // ВЕРСИИ, СОВМЕСТИМЫЕ С GraphHopper 5.0:
     implementation("org.slf4j:slf4j-android:1.7.36")
     implementation("net.sf.trove4j:trove4j:3.0.3")
     implementation("com.carrotsearch:hppc:0.7.3")  // ← ВАЖНО: 0.7.3, а не 0.9.1!
     implementation("com.fasterxml.jackson.core:jackson-databind:2.15.2")
-    
+
     // Локальный сервер
     implementation("org.nanohttpd:nanohttpd:2.3.1")
 
     // OCR
     implementation("androidx.exifinterface:exifinterface:1.3.7")
     implementation("com.google.mlkit:text-recognition:16.0.1")
+
+    // ⭐ ExoPlayer (Media3) для видео
+    implementation("androidx.media3:media3-exoplayer:1.4.1")
+    implementation("androidx.media3:media3-ui:1.4.1")
+    implementation("androidx.media3:media3-common:1.4.1")
 }

@@ -46,8 +46,10 @@ class VaultViewModel(
         isLoading = true
         viewModelScope.launch {
             try {
+                // ⭐ Читаем Compose state ДО входа в IO поток
+                val fid = currentFolder?.id
+                
                 val result = withContext(Dispatchers.IO) {
-                    val fid = currentFolder?.id
                     val folders = appContainer.folderRepository.getFolders()
                         .filter { it.parentId == fid }
                         .map { VaultItem.FolderItem(it) }
@@ -68,7 +70,7 @@ class VaultViewModel(
             }
         }
     }
-
+    
     fun openFolder(folder: VaultFolder) {
         folderStack.addLast(currentFolder)
         currentFolder = folder
