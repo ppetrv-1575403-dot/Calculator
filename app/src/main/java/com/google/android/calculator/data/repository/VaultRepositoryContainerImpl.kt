@@ -90,6 +90,17 @@ class VaultRepositoryContainerImpl(
         }
     }
 
+    // ⭐ Метод для контейнера: читаем расшифрованные байты напрямую из памяти контейнера
+    override suspend fun decryptToBytes(encryptedFileName: String): ByteArray? = withContext(Dispatchers.IO) {
+        try {
+            val result = container.getEntryBytes(encryptedFileName)
+            result.getOrNull()
+        } catch (e: Exception) {
+            FileLogger.e("VaultContainerRepo", "decryptToBytes failed", e)
+            null
+        }
+    }
+
     override suspend fun moveFilesToFolder(fromFolderId: String, toFolderId: String?): Result<Unit> = mutex.withLock {
         try {
             val entries = container.listEntries()

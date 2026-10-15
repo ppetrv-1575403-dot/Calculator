@@ -129,4 +129,7 @@ dependencies {
     implementation("androidx.media3:media3-exoplayer:1.4.1")
     implementation("androidx.media3:media3-ui:1.4.1")
     implementation("androidx.media3:media3-common:1.4.1")
+
+    // ⭐ Библиотека для качественного зума изображений в Compose
+    implementation("net.engawapg.lib:zoomable:1.6.1")
 }

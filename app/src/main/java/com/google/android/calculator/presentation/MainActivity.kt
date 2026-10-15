@@ -29,6 +29,9 @@ import com.google.android.calculator.BuildConfig
 import com.google.android.calculator.presentation.MyApplication
 import com.google.android.calculator.utils.ClipboardManager
 import com.google.android.calculator.utils.FileLogger
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.WindowInsetsControllerCompat
 
 class MainActivity : ComponentActivity() {
 
@@ -78,6 +81,11 @@ class MainActivity : ComponentActivity() {
 
         MapLibre.getInstance(this)
 
+        // ⭐ ГАРАНТИРОВАННО сбрасываем флаги окна при каждом запуске Activity
+        WindowCompat.setDecorFitsSystemWindows(window, true)
+
+        resetWindowFlags()
+        
         setContent {
             VaultTheme {
                 Surface(
@@ -90,6 +98,29 @@ class MainActivity : ComponentActivity() {
         }
 
         observeAppLifecycle()
+    }
+
+    // ⭐ ГАРАНТИРОВАННЫЙ СБРОС ПРИ КАЖДОМ ВОЗВРАТЕ В ПРИЛОЖЕНИЕ
+    // Это сработает, когда пользователь возвращается с PreviewScreen
+    override fun onResume() {
+        super.onResume()
+        resetWindowFlags()
+        FileLogger.d("MainActivity", "Window flags reset on resume")
+    }
+    
+    private fun resetWindowFlags() {
+        val window = this.window
+        val insetsController = WindowCompat.getInsetsController(window, window.decorView)
+        
+        // 1. Показываем все системные бары
+        insetsController.show(WindowInsetsCompat.Type.systemBars())
+        
+        // 2. Возвращаем системе управление отступами
+        WindowCompat.setDecorFitsSystemWindows(window, true)
+        
+        // 3. Сбрасываем поведение (убираем transient mode)
+        insetsController.systemBarsBehavior = 
+            WindowInsetsControllerCompat.BEHAVIOR_DEFAULT
     }
 
     /**

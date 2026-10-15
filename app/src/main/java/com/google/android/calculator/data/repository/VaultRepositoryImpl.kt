@@ -6,6 +6,7 @@ import com.google.android.calculator.data.crypto.CryptoManager
 import com.google.android.calculator.data.secure.EncryptedMetaStore
 import com.google.android.calculator.domain.model.VaultFile
 import com.google.android.calculator.domain.repository.VaultRepository
+import com.google.android.calculator.utils.FileLogger
 import com.google.android.calculator.utils.VaultManager
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.sync.Mutex
@@ -132,6 +133,26 @@ class VaultRepositoryImpl(
                 crypto.decrypt(enc, it, password) 
             }
         } catch (e: Exception) { null }
+    }
+
+    // ⭐ Оптимизированный метод: расшифровываем во временный файл и читаем в ByteArray
+    override suspend fun decryptToBytes(encryptedFileName: String): ByteArray? = withContext(Dispatchers.IO) {
+        try {
+            val password = getPassword()
+            val enc = File(vaultDir, encryptedFileName)
+            if (!enc.exists()) return@withContext null
+            
+            val tempOut = File.createTempFile("vault_bytes_", ".tmp", context.cacheDir)
+            try {
+                crypto.decrypt(enc, tempOut, password)
+                tempOut.readBytes()
+            } finally {
+                tempOut.delete() // Сразу удаляем временный файл
+            }
+        } catch (e: Exception) {
+            FileLogger.e("VaultRepository", "decryptToBytes failed", e)
+            null
+        }
     }
 
     override suspend fun moveFilesToFolder(fromFolderId: String, toFolderId: String?) = withContext(Dispatchers.IO) {

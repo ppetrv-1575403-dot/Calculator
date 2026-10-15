@@ -188,12 +188,20 @@ fun AppNavigator(appContainer: AppContainer, mainActivity: MainActivity) {
         }
 
         composable(
-            route = "preview/{fileId}",
-            arguments = listOf(navArgument("fileId") { type = NavType.StringType })
+            route = "preview/{fileId}?folderId={folderId}",
+            arguments = listOf(
+                navArgument("fileId") { type = NavType.StringType },
+                navArgument("folderId") {
+                    type = NavType.StringType
+                    defaultValue = ""
+                    nullable = true
+                }
+            )
         ) { entry ->
             PreviewScreen(
                 fileId = entry.arguments?.getString("fileId") ?: "",
                 appContainer = appContainer,
+                folderId = entry.arguments?.getString("folderId")?.takeIf { it.isNotEmpty() },
                 onBack = { navController.popBackStack() }
             )
         }

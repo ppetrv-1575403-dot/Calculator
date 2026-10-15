@@ -1,205 +1,516 @@
 package com.google.android.calculator.presentation.preview
 
+import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.net.Uri
+import androidx.activity.compose.BackHandler
+import android.content.Context
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.Image
+import androidx.compose.foundation.background
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.pager.HorizontalPager
+import androidx.compose.foundation.pager.rememberPagerState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.ArrowBack
+import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.unit.dp // ⭐ Исправление 1: добавлен импорт dp
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.WindowInsetsControllerCompat
+import androidx.media3.common.C
 import androidx.media3.common.MediaItem
+import androidx.media3.common.Player
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.ui.PlayerView
 import com.google.android.calculator.data.datasource.VaultDataSourceFactory
 import com.google.android.calculator.di.AppContainer
+import com.google.android.calculator.domain.model.VaultFile
 import com.google.android.calculator.utils.FileLogger
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import java.io.File
+// ⭐ Импорты для библиотеки зума
+import net.engawapg.lib.zoomable.rememberZoomState
+import net.engawapg.lib.zoomable.zoomable
 
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun PreviewScreen(
     fileId: String,
     appContainer: AppContainer,
-    onBack: () -> Unit
+    onBack: () -> Unit,
+    folderId: String? = null
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     
-    var file by remember { mutableStateOf<com.google.android.calculator.domain.model.VaultFile?>(null) }
-    var tempFile by remember { mutableStateOf<File?>(null) }
+    var allFiles by remember { mutableStateOf<List<VaultFile>>(emptyList()) }
+    var currentIndex by remember { mutableStateOf(0) }
     var isLoading by remember { mutableStateOf(true) }
-    var errorMessage by remember { mutableStateOf<String?>(null) }
-
-    LaunchedEffect(fileId) {
+    
+    LaunchedEffect(folderId) {
         isLoading = true
-        errorMessage = null
         try {
-            val f = withContext(Dispatchers.IO) {
-                appContainer.vaultRepository.getFiles().find { it.id == fileId }
+            val files = withContext(Dispatchers.IO) {
+                appContainer.vaultRepository.getFiles()
+                    .filter { it.folderId == folderId }
+                    .sortedBy { it.originalName.lowercase() }
             }
-            file = f
-            if (f != null) {
-                if (f.mimeType.startsWith("video/") || f.mimeType.startsWith("audio/")) {
-                    // Для видео используем прямой стриминг из контейнера, tempFile не нужен
-                    tempFile = null
-                } else {
-                    // Для фото/документов расшифровываем во временный файл
-                    val tf = withContext(Dispatchers.IO) {
-                        appContainer.vaultRepository.decryptToTempFile(f.encryptedFileName)
-                    }
-                    tempFile = tf
-                }
-            } else {
-                errorMessage = "Файл не найден"
-            }
+            allFiles = files
+            currentIndex = files.indexOfFirst { it.id == fileId }.coerceAtLeast(0)
         } catch (e: Exception) {
-            FileLogger.e("PreviewScreen", "Error loading file", e)
-            errorMessage = "Ошибка загрузки: ${e.message}"
+            FileLogger.e("PreviewScreen", "Error loading files", e)
+            allFiles = listOf(VaultFile(fileId, "Unknown", fileId, "video/mp4", folderId))
         } finally {
             isLoading = false
         }
     }
+    
+    if (isLoading) {
+        Box(Modifier.fillMaxSize().background(Color.Black), contentAlignment = Alignment.Center) {
+            CircularProgressIndicator(color = Color.White)
+        }
+        return
+    }
+    
+    if (allFiles.isEmpty()) {
+        Box(Modifier.fillMaxSize().background(Color.Black), contentAlignment = Alignment.Center) {
+            Text("Файлы не найдены", color = Color.White)
+        }
+        return
+    }
+    
+    val pagerState = rememberPagerState(
+        initialPage = currentIndex,
+        pageCount = { allFiles.size }
+    )
+    
+    LaunchedEffect(pagerState.currentPage) {
+        currentIndex = pagerState.currentPage
+    }
+    
+    BackHandler {
+        onBack()
+    }
+    
+    HorizontalPager(
+        state = pagerState,
+        modifier = Modifier.fillMaxSize(),
+        beyondBoundsPageCount = 1
+    ) { page ->
+        val file = allFiles[page]
+        FilePlayerView(
+            file = file,
+            appContainer = appContainer,
+            onBack = onBack,
+            onNext = {
+                if (page < allFiles.size - 1) {
+                    scope.launch { pagerState.animateScrollToPage(page + 1) }
+                }
+            },
+            onPrevious = {
+                if (page > 0) {
+                    scope.launch { pagerState.animateScrollToPage(page - 1) }
+                }
+            }
+        )
+    }
+}
 
-    DisposableEffect(Unit) {
-        onDispose {
-            tempFile?.delete()
+@Composable
+private fun FilePlayerView(
+    file: VaultFile,
+    appContainer: AppContainer,
+    onBack: () -> Unit,
+    onNext: () -> Unit,
+    onPrevious: () -> Unit
+) {
+    val context = LocalContext.current
+    var imageBytes by remember { mutableStateOf<ByteArray?>(null) }
+    var isLoading by remember { mutableStateOf(true) }
+    var errorMessage by remember { mutableStateOf<String?>(null) }
+    
+    LaunchedEffect(file.id) {
+        isLoading = true
+        errorMessage = null
+        try {
+            if (file.mimeType.startsWith("video/") || file.mimeType.startsWith("audio/")) {
+                imageBytes = null
+            } else if (file.mimeType.startsWith("image/")) {
+                val bytes = withContext(Dispatchers.IO) {
+                    appContainer.vaultRepository.decryptToBytes(file.encryptedFileName)
+                }
+                imageBytes = bytes
+            } else {
+                val tf = withContext(Dispatchers.IO) {
+                    appContainer.vaultRepository.decryptToTempFile(file.encryptedFileName)
+                }
+                imageBytes = tf?.readBytes()
+            }
+        } catch (e: Exception) {
+            FileLogger.e("PreviewScreen", "Error loading file", e)
+            errorMessage = "Ошибка загрузки"
+        } finally {
+            isLoading = false
         }
     }
-
-    Scaffold(
-        topBar = {
-            TopAppBar(
-                title = { Text(file?.originalName ?: "Просмотр", maxLines = 1) },
-                navigationIcon = {
-                    IconButton(onClick = onBack) {
-                        Icon(Icons.Default.ArrowBack, "Назад")
-                    }
-                }
-            )
-        }
-    ) { padding ->
-        Box(
-            modifier = Modifier.fillMaxSize().padding(padding),
-            contentAlignment = Alignment.Center
-        ) {
-            when {
-                isLoading -> CircularProgressIndicator()
-                errorMessage != null -> Text(
-                    errorMessage!!, 
-                    color = MaterialTheme.colorScheme.error, 
-                    modifier = Modifier.padding(16.dp) // ⭐ Здесь использовался dp
-                )
-                file == null -> Text("Файл не найден")
-                file!!.mimeType.startsWith("video/") || file!!.mimeType.startsWith("audio/") -> {
-                    val container = appContainer.getActiveContainer()
-                    if (container != null) {
-                        VideoPlayerView(
-                            fileId = file!!.id,
-                            mimeType = file!!.mimeType,
-                            container = container
-                        )
-                    } else {
-                        Text(
-                            "Контейнер не доступен. Включите его в настройках.", 
-                            color = MaterialTheme.colorScheme.error,
-                            modifier = Modifier.padding(16.dp)
-                        )
-                    }
-                }
-                tempFile != null && file!!.mimeType.startsWith("image/") -> {
-                    ImagePreview(tempFile = tempFile!!)
-                }
-                tempFile != null -> {
-                    Text(
-                        "Просмотр файлов типа ${file!!.mimeType} пока не поддерживается.\nФайл успешно расшифрован во временную память.",
-                        modifier = Modifier.padding(16.dp)
+    
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Color.Black)
+    ) {
+        when {
+            isLoading -> {
+                CircularProgressIndicator(modifier = Modifier.align(Alignment.Center), color = Color.White)
+            }
+            errorMessage != null -> {
+                Text(errorMessage!!, color = Color.White, modifier = Modifier.align(Alignment.Center).padding(16.dp))
+            }
+            file.mimeType.startsWith("video/") || file.mimeType.startsWith("audio/") -> {
+                val container = appContainer.getActiveContainer()
+                if (container != null) {
+                    VideoPlayerView(
+                        fileId = file.id,
+                        fileName = file.originalName,
+                        mimeType = file.mimeType,
+                        container = container,
+                        onBack = onBack,
+                        onNext = onNext,
+                        onPrevious = onPrevious
                     )
+                } else {
+                    Text("Контейнер не доступен", color = Color.White, modifier = Modifier.align(Alignment.Center))
                 }
+            }
+            imageBytes != null && file.mimeType.startsWith("image/") -> {
+                ImagePreview(
+                    imageBytes = imageBytes!!,
+                    fileName = file.originalName,
+                    onBack = onBack,
+                    onNext = onNext,
+                    onPrevious = onPrevious
+                )
+            }
+            imageBytes != null -> {
+                Text("Просмотр не поддерживается", color = Color.White, modifier = Modifier.align(Alignment.Center).padding(16.dp))
             }
         }
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun VideoPlayerView(
-    fileId: String, 
-    mimeType: String, 
-    container: com.google.android.calculator.data.container.VaultContainer
+    fileId: String,
+    fileName: String,
+    mimeType: String,
+    container: com.google.android.calculator.data.container.VaultContainer,
+    onBack: () -> Unit,
+    onNext: () -> Unit,
+    onPrevious: () -> Unit
 ) {
     val context = LocalContext.current
+    var isPlaying by remember { mutableStateOf(false) }
+    var showControls by remember { mutableStateOf(true) }
+    var currentPosition by remember { mutableStateOf(0L) }
+    var duration by remember { mutableStateOf(0L) }
+    var isFullscreen by remember { mutableStateOf(false) }
     
-    // ⭐ Исправление 2: MediaSourceFactory передается в Builder, а не в экземпляр плеера
-    val exoPlayer = remember {
+    val exoPlayer = remember(fileId) {
         val dataSourceFactory = VaultDataSourceFactory(container)
         val mediaSourceFactory = DefaultMediaSourceFactory(dataSourceFactory)
         
         ExoPlayer.Builder(context)
-            .setMediaSourceFactory(mediaSourceFactory) // <-- Правильное место
+            .setMediaSourceFactory(mediaSourceFactory)
             .build().apply {
                 playWhenReady = true
+                addListener(object : Player.Listener {
+                    override fun onIsPlayingChanged(playing: Boolean) { isPlaying = playing }
+                    override fun onPlaybackStateChanged(playbackState: Int) {
+                        if (playbackState == Player.STATE_READY) {
+                            duration = this@apply.duration
+                        }
+                    }
+                })
             }
     }
-
+    
+    LaunchedEffect(exoPlayer) {
+        while (true) {
+            currentPosition = exoPlayer.currentPosition
+            val dur = exoPlayer.duration
+            if (dur > 0 && dur != C.TIME_UNSET) {
+                duration = dur
+            }
+            delay(500)
+        }
+    }
+    
+    LaunchedEffect(fileId) {
+        val uri = Uri.parse("vault://container/$fileId")
+        val mediaItem = MediaItem.Builder().setUri(uri).setMimeType(mimeType).build()
+        exoPlayer.setMediaItem(mediaItem)
+        exoPlayer.prepare()
+    }
+    
     DisposableEffect(Unit) {
         onDispose {
+            hideSystemWindowControls(context, false)
             exoPlayer.release()
         }
     }
-
-    LaunchedEffect(fileId) {
-        // Используем кастомную схему URI, которую перехватит наш VaultMediaDataSource
-        val uri = Uri.parse("vault://container/$fileId")
-        
-        // ⭐ Создаем MediaItem с явным указанием MIME типа
-        val mediaItem = MediaItem.Builder()
-            .setUri(uri)
-            .setMimeType(mimeType) // <-- Важно!
-            .build()
-        
-        exoPlayer.setMediaItem(mediaItem)
-        exoPlayer.prepare()
-        
-        FileLogger.d("PreviewScreen", "ExoPlayer prepared for file: $fileId, mimeType: $mimeType")
-    }
     
-    AndroidView(
-        factory = { ctx ->
-            PlayerView(ctx).apply {
-                player = exoPlayer
-                useController = true
+    // 1. Управление полноэкранным режимом
+    LaunchedEffect(isFullscreen) {
+        hideSystemWindowControls(context, isFullscreen)
+    }
+
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Color.Black)
+            .pointerInput(Unit) {
+                detectTapGestures(
+                    onTap = { showControls = !showControls },
+                    onDoubleTap = { if (isPlaying) exoPlayer.pause() else exoPlayer.play() }
+                )
             }
-        },
-        modifier = Modifier.fillMaxSize()
-    )
+    ) {
+        AndroidView(
+            factory = { ctx ->
+                PlayerView(ctx).apply {
+                    player = exoPlayer
+                    useController = false
+                    resizeMode = androidx.media3.ui.AspectRatioFrameLayout.RESIZE_MODE_FIT
+                }
+            },
+            modifier = Modifier.fillMaxSize()
+        )
+        
+        AnimatedVisibility(visible = showControls, enter = fadeIn(), exit = fadeOut(), modifier = Modifier.fillMaxSize()) {
+            Box(modifier = Modifier.fillMaxSize()) {
+                TopBar(fileName = fileName, onBack = onBack, modifier = Modifier.align(Alignment.TopCenter))
+                CenterControls(
+                    isPlaying = isPlaying,
+                    onPlayPause = { if (isPlaying) exoPlayer.pause() else exoPlayer.play() },
+                    onPrevious = { exoPlayer.seekTo(0); onPrevious() },
+                    onNext = { onNext() },
+                    modifier = Modifier.align(Alignment.Center)
+                )
+                BottomControls(
+                    currentPosition = currentPosition,
+                    duration = duration,
+                    onSeek = { position -> exoPlayer.seekTo(position); currentPosition = position },
+                    isFullscreen = isFullscreen,
+                    onFullscreenToggle = { isFullscreen = !isFullscreen },
+                    modifier = Modifier.align(Alignment.BottomCenter)
+                )
+            }
+        }
+    }
 }
 
 @Composable
-private fun ImagePreview(tempFile: File) {
-    var bitmap by remember { mutableStateOf<android.graphics.Bitmap?>(null) }
-    
-    LaunchedEffect(tempFile) {
-        bitmap = BitmapFactory.decodeFile(tempFile.absolutePath)
-    }
-    
-    if (bitmap != null) {
-        Image(
-            bitmap = bitmap!!.asImageBitmap(),
-            contentDescription = "Image Preview",
-            modifier = Modifier.fillMaxSize(),
-            contentScale = androidx.compose.ui.layout.ContentScale.Fit
+private fun TopBar(fileName: String, onBack: () -> Unit, modifier: Modifier = Modifier) {
+    Row(
+        modifier = modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 12.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        IconButton(onClick = onBack) {
+            Icon(Icons.Default.ArrowBack, "Назад", tint = Color.White, modifier = Modifier.size(24.dp))
+        }
+        Spacer(Modifier.width(12.dp))
+        Text(
+            fileName,
+            color = Color.White.copy(alpha = 0.9f),
+            fontSize = 14.sp,
+            fontWeight = FontWeight.Medium,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.weight(1f)
         )
-    } else {
-        Text("Не удалось загрузить изображение", color = MaterialTheme.colorScheme.error)
     }
+}
+
+@Composable
+private fun CenterControls(isPlaying: Boolean, onPlayPause: () -> Unit, onPrevious: () -> Unit, onNext: () -> Unit, modifier: Modifier = Modifier) {
+    Row(modifier = modifier, horizontalArrangement = Arrangement.spacedBy(32.dp), verticalAlignment = Alignment.CenterVertically) {
+        IconButton(
+            onClick = onPrevious,
+            modifier = Modifier.size(56.dp).clip(CircleShape)
+        ) {
+            Icon(Icons.Default.SkipPrevious, "Предыдущий", tint = Color.White, modifier = Modifier.size(32.dp))
+        }
+        IconButton(
+            onClick = onPlayPause,
+            modifier = Modifier.size(72.dp).clip(CircleShape).background(Color.White.copy(alpha = 0.15f))
+        ) {
+            Icon(if (isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow, if (isPlaying) "Пауза" else "Воспроизвести", tint = Color.White, modifier = Modifier.size(48.dp))
+        }
+        IconButton(
+            onClick = onNext,
+            modifier = Modifier.size(56.dp).clip(CircleShape)
+        ) {
+            Icon(Icons.Default.SkipNext, "Следующий", tint = Color.White, modifier = Modifier.size(32.dp))
+        }
+    }
+}
+
+@Composable
+private fun BottomControls(currentPosition: Long, duration: Long, onSeek: (Long) -> Unit, isFullscreen: Boolean, onFullscreenToggle: () -> Unit, modifier: Modifier = Modifier) {
+    Column(modifier = modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp)) {
+        Slider(
+            value = if (duration > 0) currentPosition.toFloat() / duration.toFloat() else 0f,
+            onValueChange = { ratio -> onSeek((ratio * duration).toLong()) },
+            modifier = Modifier.fillMaxWidth(),
+            colors = SliderDefaults.colors(thumbColor = Color.White, activeTrackColor = Color.White, inactiveTrackColor = Color.White.copy(alpha = 0.3f))
+        )
+        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+            Text("${formatTime(currentPosition)} / ${formatTime(duration)}", color = Color.White.copy(alpha = 0.8f), fontSize = 12.sp)
+            IconButton(onClick = onFullscreenToggle) {
+                Icon(if (isFullscreen) Icons.Default.FullscreenExit else Icons.Default.Fullscreen, "Полноэкранный режим", tint = Color.White, modifier = Modifier.size(24.dp))
+            }
+        }
+    }
+}
+
+private fun hideSystemWindowControls(context: Context, hide: Boolean) {
+    val activity = context as? android.app.Activity
+        if (activity != null) {
+            val window = activity.window
+            val insetsController = WindowCompat.getInsetsController(window, window.decorView)
+            if (hide) {
+                WindowCompat.setDecorFitsSystemWindows(window, false)
+                insetsController.hide(WindowInsetsCompat.Type.systemBars())
+                insetsController.systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+            } else {
+                WindowCompat.setDecorFitsSystemWindows(window, true)
+                insetsController.show(WindowInsetsCompat.Type.systemBars())
+            }
+        }
+}
+
+private fun formatTime(ms: Long): String {
+    if (ms <= 0 || ms == C.TIME_UNSET) return "--:--"
+    val totalSeconds = ms / 1000
+    val hours = totalSeconds / 3600
+    val minutes = (totalSeconds % 3600) / 60
+    val seconds = totalSeconds % 60
+    return if (hours > 0) String.format("%d:%02d:%02d", hours, minutes, seconds) else String.format("%d:%02d", minutes, seconds)
+}
+
+@Composable
+private fun ImagePreview(imageBytes: ByteArray, fileName: String, onBack: () -> Unit, onNext: () -> Unit, onPrevious: () -> Unit) {
+    var bitmap by remember { mutableStateOf<Bitmap?>(null) }
+    var showControls by remember { mutableStateOf(true) }
+    
+    val configuration = LocalConfiguration.current
+    val screenWidth = configuration.screenWidthDp
+    val screenHeight = configuration.screenHeightDp
+    
+    LaunchedEffect(imageBytes) {
+        withContext(Dispatchers.IO) {
+            val options = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+            BitmapFactory.decodeByteArray(imageBytes, 0, imageBytes.size, options)
+            
+            var inSampleSize = 1
+            if (options.outHeight > screenHeight || options.outWidth > screenWidth) {
+                val halfHeight = options.outHeight / 2
+                val halfWidth = options.outWidth / 2
+                while ((halfHeight / inSampleSize) >= screenHeight && (halfWidth / inSampleSize) >= screenWidth) {
+                    inSampleSize *= 2
+                }
+            }
+            
+            options.inJustDecodeBounds = false
+            options.inSampleSize = inSampleSize
+            options.inPreferredConfig = Bitmap.Config.RGB_565
+            bitmap = BitmapFactory.decodeByteArray(imageBytes, 0, imageBytes.size, options)
+        }
+    }
+    
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Color.Black)
+            .pointerInput(Unit) {
+                detectTapGestures(onTap = { showControls = !showControls })
+            }
+    ) {
+        if (bitmap != null) {
+            ZoomableImage(bitmap = bitmap!!)
+        } else {
+            Text("Загрузка...", color = Color.White, modifier = Modifier.align(Alignment.Center))
+        }
+        
+        AnimatedVisibility(visible = showControls, enter = fadeIn(), exit = fadeOut()) {
+            Box(modifier = Modifier.fillMaxSize()) {
+                TopBar(fileName = fileName, onBack = onBack, modifier = Modifier.align(Alignment.TopCenter))
+                
+                IconButton(
+                    onClick = onPrevious,
+                    modifier = Modifier
+                        .align(Alignment.TopStart)
+                        .padding(start = 8.dp, top = 64.dp)
+                        .size(56.dp)
+                ) {
+                    Icon(Icons.Default.ChevronLeft, "Предыдущий", tint = Color.White, modifier = Modifier.size(40.dp))
+                }
+                
+                IconButton(
+                    onClick = onNext,
+                    modifier = Modifier
+                        .align(Alignment.TopEnd)
+                        .padding(end = 8.dp, top = 64.dp)
+                        .size(56.dp)
+                ) {
+                    Icon(Icons.Default.ChevronRight, "Следующий", tint = Color.White, modifier = Modifier.size(40.dp))
+                }
+            }
+        }
+    }
+}
+
+// ⭐ ИСПОЛЬЗУЕМ ГОТОВУЮ, КАЧЕСТВЕННУЮ БИБЛИОТЕКУ ДЛЯ ЗУМА
+@Composable
+private fun ZoomableImage(bitmap: Bitmap, modifier: Modifier = Modifier) {
+    // Состояние зума от библиотеки. Она сама знает размеры контента
+    val zoomState = rememberZoomState(contentSize = Size(bitmap.width.toFloat(), bitmap.height.toFloat()))
+
+    Image(
+        bitmap = bitmap.asImageBitmap(),
+        contentDescription = "Preview",
+        contentScale = androidx.compose.ui.layout.ContentScale.Fit,
+        modifier = modifier
+            .fillMaxSize()
+            // ⭐ Один модификатор заменяет сотни строк ручной математики жестов!
+            // Он автоматически обрабатывает pinch-to-zoom, double-tap, fling (инерцию) 
+            // и корректно передает свайпы HorizontalPager'у, когда зум = 1x
+            .zoomable(zoomState)
+    )
 }
