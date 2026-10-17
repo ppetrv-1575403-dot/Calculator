@@ -15,7 +15,9 @@ import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
@@ -29,7 +31,9 @@ import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -51,7 +55,6 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-// ⭐ Импорты для библиотеки зума
 import net.engawapg.lib.zoomable.rememberZoomState
 import net.engawapg.lib.zoomable.zoomable
 
@@ -70,14 +73,51 @@ fun PreviewScreen(
     var currentIndex by remember { mutableStateOf(0) }
     var isLoading by remember { mutableStateOf(true) }
     
-    LaunchedEffect(folderId) {
+    DisposableEffect(Unit) {
+        onDispose {
+            val activity = context as? android.app.Activity
+            if (activity != null) {
+                val window = activity.window
+                val insetsController = WindowCompat.getInsetsController(window, window.decorView)
+                try {
+                    insetsController.show(WindowInsetsCompat.Type.systemBars())
+                    WindowCompat.setDecorFitsSystemWindows(window, true)
+                    insetsController.systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_DEFAULT
+                    window.decorView.requestLayout()
+                } catch (e: Exception) {
+                    FileLogger.e("PreviewScreen", "Error resetting window flags", e)
+                }
+            }
+        }
+    }
+    
+    // ⭐ ИСПРАВЛЕНО: находим файл по ID и используем ЕГО реальный folderId
+    LaunchedEffect(fileId, folderId) {
         isLoading = true
         try {
-            val files = withContext(Dispatchers.IO) {
+            val allVaultFiles = withContext(Dispatchers.IO) {
                 appContainer.vaultRepository.getFiles()
+            }
+            
+            // ⭐ Сначала ищем файл по ID
+            val targetFile = allVaultFiles.firstOrNull { it.id == fileId }
+            
+            val files = if (targetFile != null) {
+                // ⭐ Если нашли файл, фильтруем по его РЕАЛЬНОМУ folderId
+                // Это гарантирует, что свайпы будут работать в правильной папке
+                val realFolderId = targetFile.folderId
+                FileLogger.d("PreviewScreen", "Found file $fileId in folder $realFolderId (passed folderId was $folderId)")
+                allVaultFiles
+                    .filter { it.folderId == realFolderId }
+                    .sortedBy { it.originalName.lowercase() }
+            } else {
+                // Файл не найден (маловероятно), используем переданный folderId
+                FileLogger.w("PreviewScreen", "File $fileId not found, using passed folderId=$folderId")
+                allVaultFiles
                     .filter { it.folderId == folderId }
                     .sortedBy { it.originalName.lowercase() }
             }
+            
             allFiles = files
             currentIndex = files.indexOfFirst { it.id == fileId }.coerceAtLeast(0)
         } catch (e: Exception) {
@@ -214,8 +254,39 @@ private fun FilePlayerView(
                     onPrevious = onPrevious
                 )
             }
+            imageBytes != null && isTextDocument(file.mimeType, file.originalName) -> {
+                DocumentPreview(
+                    documentBytes = imageBytes!!,
+                    fileName = file.originalName,
+                    onBack = onBack
+                )
+            }
             imageBytes != null -> {
-                Text("Просмотр не поддерживается", color = Color.White, modifier = Modifier.align(Alignment.Center).padding(16.dp))
+                Column(
+                    modifier = Modifier.align(Alignment.Center).padding(24.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    Icon(
+                        Icons.Default.Description,
+                        null,
+                        tint = Color.White.copy(alpha = 0.6f),
+                        modifier = Modifier.size(64.dp)
+                    )
+                    Spacer(Modifier.height(16.dp))
+                    Text(
+                        file.originalName,
+                        color = Color.White,
+                        fontSize = 16.sp,
+                        fontWeight = FontWeight.Medium
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    Text(
+                        "Формат ${file.mimeType} не поддерживается для просмотра.\nИспользуйте экспорт, чтобы открыть файл во внешнем приложении.",
+                        color = Color.White.copy(alpha = 0.6f),
+                        fontSize = 13.sp,
+                        textAlign = TextAlign.Center
+                    )
+                }
             }
         }
     }
@@ -283,7 +354,6 @@ private fun VideoPlayerView(
         }
     }
     
-    // 1. Управление полноэкранным режимом
     LaunchedEffect(isFullscreen) {
         hideSystemWindowControls(context, isFullscreen)
     }
@@ -401,18 +471,18 @@ private fun BottomControls(currentPosition: Long, duration: Long, onSeek: (Long)
 
 private fun hideSystemWindowControls(context: Context, hide: Boolean) {
     val activity = context as? android.app.Activity
-        if (activity != null) {
-            val window = activity.window
-            val insetsController = WindowCompat.getInsetsController(window, window.decorView)
-            if (hide) {
-                WindowCompat.setDecorFitsSystemWindows(window, false)
-                insetsController.hide(WindowInsetsCompat.Type.systemBars())
-                insetsController.systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
-            } else {
-                WindowCompat.setDecorFitsSystemWindows(window, true)
-                insetsController.show(WindowInsetsCompat.Type.systemBars())
-            }
+    if (activity != null) {
+        val window = activity.window
+        val insetsController = WindowCompat.getInsetsController(window, window.decorView)
+        if (hide) {
+            WindowCompat.setDecorFitsSystemWindows(window, false)
+            insetsController.hide(WindowInsetsCompat.Type.systemBars())
+            insetsController.systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+        } else {
+            WindowCompat.setDecorFitsSystemWindows(window, true)
+            insetsController.show(WindowInsetsCompat.Type.systemBars())
         }
+    }
 }
 
 private fun formatTime(ms: Long): String {
@@ -496,10 +566,8 @@ private fun ImagePreview(imageBytes: ByteArray, fileName: String, onBack: () -> 
     }
 }
 
-// ⭐ ИСПОЛЬЗУЕМ ГОТОВУЮ, КАЧЕСТВЕННУЮ БИБЛИОТЕКУ ДЛЯ ЗУМА
 @Composable
 private fun ZoomableImage(bitmap: Bitmap, modifier: Modifier = Modifier) {
-    // Состояние зума от библиотеки. Она сама знает размеры контента
     val zoomState = rememberZoomState(contentSize = Size(bitmap.width.toFloat(), bitmap.height.toFloat()))
 
     Image(
@@ -508,9 +576,69 @@ private fun ZoomableImage(bitmap: Bitmap, modifier: Modifier = Modifier) {
         contentScale = androidx.compose.ui.layout.ContentScale.Fit,
         modifier = modifier
             .fillMaxSize()
-            // ⭐ Один модификатор заменяет сотни строк ручной математики жестов!
-            // Он автоматически обрабатывает pinch-to-zoom, double-tap, fling (инерцию) 
-            // и корректно передает свайпы HorizontalPager'у, когда зум = 1x
             .zoomable(zoomState)
     )
+}
+
+private fun isTextDocument(mime: String, name: String): Boolean {
+    if (mime.startsWith("text/")) return true
+    val lower = name.lowercase()
+    val textExtensions = listOf(
+        ".txt", ".md", ".markdown", ".csv", ".json", ".xml", ".log", 
+        ".html", ".htm", ".ini", ".conf", ".cfg", ".yml", ".yaml", 
+        ".sh", ".bat", ".ps1", ".py", ".js", ".ts", ".jsx", ".tsx",
+        ".java", ".kt", ".kts", ".c", ".cpp", ".h", ".hpp", ".cs",
+        ".swift", ".go", ".rs", ".rb", ".php", ".css", ".scss", ".less",
+        ".sql", ".properties", ".toml", ".gradle", ".gitignore", ".rtf"
+    )
+    if (textExtensions.any { lower.endsWith(it) }) return true
+    
+    return mime == "application/json" || mime == "application/xml" || 
+           mime == "application/javascript" || mime == "application/x-sh"
+}
+
+@Composable
+private fun DocumentPreview(
+    documentBytes: ByteArray,
+    fileName: String,
+    onBack: () -> Unit
+) {
+    val text = remember(documentBytes) {
+        String(documentBytes, Charsets.UTF_8)
+    }
+    var showControls by remember { mutableStateOf(true) }
+    
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Color(0xFF121212))
+            .pointerInput(Unit) {
+                detectTapGestures(onTap = { showControls = !showControls })
+            }
+    ) {
+        Text(
+            text = text,
+            color = Color(0xFFDDDDDD),
+            fontSize = 14.sp,
+            lineHeight = 20.sp,
+            fontFamily = FontFamily.Monospace,
+            modifier = Modifier
+                .fillMaxSize()
+                .verticalScroll(rememberScrollState())
+                .padding(horizontal = 16.dp)
+                .padding(top = 64.dp, bottom = 24.dp)
+        )
+        
+        AnimatedVisibility(
+            visible = showControls,
+            enter = fadeIn(),
+            exit = fadeOut()
+        ) {
+            TopBar(
+                fileName = fileName,
+                onBack = onBack,
+                modifier = Modifier.align(Alignment.TopCenter)
+            )
+        }
+    }
 }

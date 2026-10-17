@@ -56,32 +56,52 @@ class AppContainer(context: Context) {
         }
         
         synchronized(cacheLock) {
-            return containerCache.getOrPut(slotId) {
-                val c = VaultContainer(file, cryptoManager)
-                try {
-                    if (!c.exists()) {
-                        FileLogger.i("AppContainer", "Creating new container for slot $slotId")
-                        c.create(password)
-                    } else {
-                        FileLogger.i("AppContainer", "Opening existing container for slot $slotId")
-                        c.open(password)
-                    }
-                } catch (e: Exception) {
-                    FileLogger.e("AppContainer", "Container open failed for slot $slotId: ${e.message}", e)
-                    
-                    // ⭐ АВТОМАТИЧЕСКИЙ СБРОС ПРИ НЕСОВМЕСТИМОСТИ ФОРМАТОВ
-                    // Если файл зашифрован старым методом (Keystore), новый код не сможет его прочитать.
-                    // Мы удаляем его и создаём новый совместимый контейнер.
-                    if (e.message?.contains("AEADBadTagException") == true || e.message?.contains("BAD_DECRYPT") == true) {
-                        FileLogger.w("AppContainer", "Incompatible or corrupted container detected. Resetting...")
-                        file.delete()
-                        c.create(password)
-                    } else {
+            val cached = containerCache[slotId]
+            if (cached != null) {
+                // ⭐ Контейнер уже существует в кэше
+                if (cached.isLocked()) {
+                    // sessionKey был сброшен (при блокировке), нужно reopen
+                    FileLogger.i("AppContainer", "Reopening cached container for slot $slotId")
+                    try {
+                        cached.reopen(password)
+                    } catch (e: Exception) {
+                        FileLogger.e("AppContainer", "Container reopen failed for slot $slotId: ${e.message}", e)
+                        if (e.message?.contains("AEADBadTagException") == true || e.message?.contains("BAD_DECRYPT") == true) {
+                            FileLogger.w("AppContainer", "Incompatible container detected. Resetting...")
+                            file.delete()
+                            containerCache.remove(slotId)
+                            return containerForSlot(slotId) // Рекурсивный вызов для создания нового
+                        }
                         throw e
                     }
                 }
-                c
+                return cached
             }
+            
+            // Создаём новый контейнер
+            val c = VaultContainer(file, cryptoManager)
+            try {
+                if (!c.exists()) {
+                    FileLogger.i("AppContainer", "Creating new container for slot $slotId")
+                    c.create(password)
+                } else {
+                    FileLogger.i("AppContainer", "Opening existing container for slot $slotId")
+                    c.open(password)
+                }
+            } catch (e: Exception) {
+                FileLogger.e("AppContainer", "Container open failed for slot $slotId: ${e.message}", e)
+                
+                if (e.message?.contains("AEADBadTagException") == true || e.message?.contains("BAD_DECRYPT") == true) {
+                    FileLogger.w("AppContainer", "Incompatible or corrupted container detected. Resetting...")
+                    file.delete()
+                    c.create(password)
+                } else {
+                    throw e
+                }
+            }
+            
+            containerCache[slotId] = c
+            return c
         }
     }
 
@@ -128,14 +148,21 @@ class AppContainer(context: Context) {
         }
     }
 
+    /**
+     * ⭐ Инвалидирует кэш для указанного slot
+     * НЕ удаляет VaultContainer, а только сбрасывает sessionKey
+     */
     fun invalidateCacheForSlot(slotId: String) {
         synchronized(cacheLock) {
-            containerCache.remove(slotId)
+            // ⭐ НЕ удаляем VaultContainer, а только сбрасываем sessionKey
+            containerCache[slotId]?.clearSessionKey()
+            
+            // Удаляем репозитории (они будут пересозданы при следующем обращении)
             vaultRepoCache.remove(slotId)
             locationRepoCache.remove(slotId)
             folderRepoCache.remove(slotId)
         }
-        FileLogger.i("AppContainer", "Cache invalidated for slot: $slotId")
+        FileLogger.i("AppContainer", "Cache invalidated for slot: $slotId (session key cleared)")
     }
 
     val addFileUseCase get() = AddFileUseCase(vaultRepository)
@@ -164,7 +191,6 @@ class AppContainer(context: Context) {
     fun setFolderPickerResult(path: String?) { _folderPickerResult.value = path }
     fun resetFolderPickerResult() { _folderPickerResult.value = null }
 
-    // ⭐ Возвращает текущий разблокированный контейнер для ExoPlayer
     fun getActiveContainer(): VaultContainer? {
         val slotId = VaultManager.currentSlotId
         if (!VaultManager.containerEnabled(slotId)) return null

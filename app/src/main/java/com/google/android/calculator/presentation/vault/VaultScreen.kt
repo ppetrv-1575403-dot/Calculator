@@ -114,9 +114,9 @@ fun VaultScreen(
 
     var showMissingContainerDialog by remember { mutableStateOf(!isContainerValid) }
 
-    LaunchedEffect(currentSlotId) {
-        appContainer.invalidateCacheForSlot(currentSlotId)
-    }
+    // ⭐ УДАЛЕН LaunchedEffect(currentSlotId) с invalidateCacheForSlot!
+    // Инвалидация кэша должна происходить ТОЛЬКО при блокировке хранилища,
+    // а не при каждом входе на экран
 
     val exportLauncher = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("*/*")) { uri ->
         appContainer.setFileOperationInProgress(false)
@@ -269,7 +269,6 @@ fun VaultScreen(
                 viewModel.items.isEmpty() && viewModel.itemToMove == null -> {
                     Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                         if (viewModel.isLoading) {
-                            // ⭐ Показываем индикатор, пока фоновый поток вычисляет ключ и читает данные
                             CircularProgressIndicator()
                         } else {
                             Text(
@@ -350,7 +349,6 @@ fun VaultScreen(
         }
     }
 
-    // ⭐ Диалог, если файл контейнера не найден
     if (showMissingContainerDialog) {
         AlertDialog(
             onDismissRequest = { },
@@ -378,7 +376,6 @@ fun VaultScreen(
         )
     }
 
-    // === Диалог подтверждения экспорта папки ===
     showExportDialog?.let { folder ->
         AlertDialog(
             onDismissRequest = { showExportDialog = null },
@@ -412,7 +409,6 @@ fun VaultScreen(
         )
     }
 
-    // === Прогресс экспорта ===
     if (isExporting) {
         AlertDialog(
             onDismissRequest = { },

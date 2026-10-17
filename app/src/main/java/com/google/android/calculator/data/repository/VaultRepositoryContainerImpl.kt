@@ -72,7 +72,8 @@ class VaultRepositoryContainerImpl(
 
     override suspend fun deleteFile(fileId: String): Result<Unit> = mutex.withLock {
         try {
-            container.removeEntry(fileId)
+            container.removeEntry(fileId).getOrThrow() // ⭐ Проверяем результат
+            Result.success(Unit)
         } catch (e: Exception) {
             FileLogger.e("VaultContainerRepo", "deleteFile failed", e)
             Result.failure(e)
@@ -90,11 +91,9 @@ class VaultRepositoryContainerImpl(
         }
     }
 
-    // ⭐ Метод для контейнера: читаем расшифрованные байты напрямую из памяти контейнера
     override suspend fun decryptToBytes(encryptedFileName: String): ByteArray? = withContext(Dispatchers.IO) {
         try {
-            val result = container.getEntryBytes(encryptedFileName)
-            result.getOrNull()
+            container.getEntryBytes(encryptedFileName).getOrNull()
         } catch (e: Exception) {
             FileLogger.e("VaultContainerRepo", "decryptToBytes failed", e)
             null
@@ -105,7 +104,7 @@ class VaultRepositoryContainerImpl(
         try {
             val entries = container.listEntries()
             entries.filter { it.folderId == fromFolderId }.forEach {
-                container.moveEntry(it.id, toFolderId)
+                container.moveEntry(it.id, toFolderId).getOrThrow() // ⭐ Проверяем результат
             }
             Result.success(Unit)
         } catch (e: Exception) {
@@ -116,7 +115,8 @@ class VaultRepositoryContainerImpl(
 
     override suspend fun moveFileToFolder(fileId: String, targetFolderId: String?): Result<Unit> = mutex.withLock {
         try {
-            container.moveEntry(fileId, targetFolderId)
+            container.moveEntry(fileId, targetFolderId).getOrThrow() // ⭐ Проверяем результат
+            Result.success(Unit)
         } catch (e: Exception) {
             FileLogger.e("VaultContainerRepo", "moveFileToFolder failed", e)
             Result.failure(e)

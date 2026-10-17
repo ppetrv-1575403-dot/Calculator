@@ -43,10 +43,18 @@ class VaultViewModel(
     fun refresh() { loadItems() }
 
     private fun loadItems() {
+        // ⭐ Защита: не загружаем данные, если контейнер заблокирован
+        // Это предотвращает перезапись UI пустым списком при блокировке
+        val container = appContainer.getActiveContainer()
+        if (container != null && container.isLocked()) {
+            FileLogger.w("VaultViewModel", "loadItems skipped: container is locked")
+            isLoading = false
+            return
+        }
+        
         isLoading = true
         viewModelScope.launch {
             try {
-                // ⭐ Читаем Compose state ДО входа в IO поток
                 val fid = currentFolder?.id
                 
                 val result = withContext(Dispatchers.IO) {
@@ -61,10 +69,18 @@ class VaultViewModel(
                         .map { VaultItem.FileItem(it) }
                     folders + locations + files
                 }
-                items = result
+                
+                // ⭐ Дополнительная защита: не перезаписываем, если получили пустой список при ошибке
+                // Если items уже содержит данные, и мы получили пустой результат — это подозрительно
+                if (result.isEmpty() && items.isNotEmpty() && container?.isLocked() == true) {
+                    FileLogger.w("VaultViewModel", "loadItems: empty result ignored (container locked)")
+                } else {
+                    items = result
+                }
             } catch (e: Exception) {
                 FileLogger.e("VaultViewModel", "Error loading items", e)
-                items = emptyList()
+                // ⭐ Не перезаписываем items при ошибке — сохраняем текущее состояние
+                // items = emptyList() // УБРАНО!
             } finally {
                 isLoading = false
             }
@@ -192,7 +208,6 @@ class VaultViewModel(
         viewModelScope.launch {
             try {
                 withContext(Dispatchers.IO) {
-                    // ⭐ Добавлена else ветка для избежания exhaustive check проблем в релизе
                     when (item) {
                         is VaultItem.FileItem -> {
                             repository.moveFileToFolder(item.file.id, folder?.id)
@@ -222,7 +237,6 @@ class VaultViewModel(
         viewModelScope.launch {
             try {
                 withContext(Dispatchers.IO) {
-                    // ⭐ Добавлена else ветка для избежания exhaustive check проблем в релизе
                     when (item) {
                         is VaultItem.FileItem -> {
                             repository.moveFileToFolder(item.file.id, parentId)
