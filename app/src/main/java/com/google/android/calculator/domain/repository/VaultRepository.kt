@@ -31,4 +31,6 @@ interface VaultRepository {
     suspend fun moveFilesToFolder(fromFolderId: String, toFolderId: String?): Result<Unit>
     
     suspend fun moveFileToFolder(fileId: String, targetFolderId: String?): Result<Unit>
+
+    suspend fun renameFile(id: String, newName: String): Result<Unit>
 }

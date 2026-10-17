@@ -12,6 +12,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
@@ -23,6 +24,7 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -43,6 +45,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
+import java.util.Locale
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -68,6 +71,12 @@ fun VaultScreen(
     var showCreateFolderDialog by remember { mutableStateOf(false) }
     var folderName by remember { mutableStateOf("") }
     var showLogsDialog by remember { mutableStateOf(false) }
+    
+    var fileToRename by remember { mutableStateOf<VaultFile?>(null) }
+    var newFileName by remember { mutableStateOf("") }
+    var folderToRename by remember { mutableStateOf<VaultFolder?>(null) }
+    var newFolderName by remember { mutableStateOf("") }
+    var locationToEdit by remember { mutableStateOf<SavedLocation?>(null) }
     
     var hasStoragePermission by remember { 
         mutableStateOf(PermissionUtils.hasManageExternalStorage()) 
@@ -113,10 +122,6 @@ fun VaultScreen(
     }
 
     var showMissingContainerDialog by remember { mutableStateOf(!isContainerValid) }
-
-    // ⭐ УДАЛЕН LaunchedEffect(currentSlotId) с invalidateCacheForSlot!
-    // Инвалидация кэша должна происходить ТОЛЬКО при блокировке хранилища,
-    // а не при каждом входе на экран
 
     val exportLauncher = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("*/*")) { uri ->
         appContainer.setFileOperationInProgress(false)
@@ -228,6 +233,13 @@ fun VaultScreen(
                     @Suppress("DEPRECATION")
                     Icon(Icons.Default.ArrowBack, "Назад")
                 }
+
+                if (viewModel.currentFolder != null && viewModel.itemToMove == null) {
+                    IconButton(onClick = { viewModel.navigateToRoot() }) {
+                        Icon(Icons.Default.Home, "В корень хранилища")
+                    }
+                }
+                
                 Text(
                     viewModel.itemToMove?.let { "Выберите папку для перемещения" }
                         ?: (viewModel.currentFolder?.name ?: stringResource(R.string.vault_title)),
@@ -294,7 +306,11 @@ fun VaultScreen(
                                         }
                                     },
                                     onDelete = { folderToDelete = item.folder },
-                                    onExport = { showExportDialog = item.folder }
+                                    onExport = { showExportDialog = item.folder },
+                                    onRename = {
+                                        folderToRename = item.folder
+                                        newFolderName = item.folder.name
+                                    }
                                 )
                                 is VaultItem.LocationItem -> LocationListItem(
                                     location = item.location,
@@ -302,7 +318,8 @@ fun VaultScreen(
                                     moveMode = viewModel.itemToMove != null,
                                     onOpenMap = { if (viewModel.itemToMove == null) onOpenMap(item.location.id) },
                                     onMove = { viewModel.startMove(item) },
-                                    onDelete = { locationToDelete = item.location }
+                                    onDelete = { locationToDelete = item.location },
+                                    onEdit = { locationToEdit = item.location }
                                 )
                                 is VaultItem.FileItem -> FileListItem(
                                     file = item.file,
@@ -311,7 +328,11 @@ fun VaultScreen(
                                     onPreview = { if (viewModel.itemToMove == null) onPreviewFile(item.file.id) },
                                     onExport = { viewModel.prepareExport(item.file) },
                                     onMove = { viewModel.startMove(item) },
-                                    onDelete = { fileToDelete = item.file }
+                                    onDelete = { fileToDelete = item.file },
+                                    onRename = {
+                                        fileToRename = item.file
+                                        newFileName = item.file.originalName
+                                    }
                                 )
                             }
                         }
@@ -497,6 +518,152 @@ fun VaultScreen(
         )
     }
 
+    // === Диалог переименования файла ===
+    if (fileToRename != null) {
+        AlertDialog(
+            onDismissRequest = { fileToRename = null },
+            title = { Text("Переименовать файл") },
+            text = { 
+                OutlinedTextField(
+                    value = newFileName,
+                    onValueChange = { newFileName = it },
+                    label = { Text("Новое имя") },
+                    singleLine = true
+                ) 
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        if (newFileName.isNotBlank()) {
+                            viewModel.renameFile(fileToRename!!, newFileName.trim())
+                            fileToRename = null
+                            newFileName = ""
+                        }
+                    }
+                ) { Text("Переименовать") }
+            },
+            dismissButton = { 
+                TextButton(onClick = { 
+                    fileToRename = null
+                    newFileName = ""
+                }) { Text("Отмена") } 
+            }
+        )
+    }
+
+    // === Диалог переименования папки ===
+    if (folderToRename != null) {
+        AlertDialog(
+            onDismissRequest = { folderToRename = null },
+            title = { Text("Переименовать папку") },
+            text = { 
+                OutlinedTextField(
+                    value = newFolderName,
+                    onValueChange = { newFolderName = it },
+                    label = { Text("Новое имя") },
+                    singleLine = true
+                ) 
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        if (newFolderName.isNotBlank()) {
+                            viewModel.renameFolder(folderToRename!!, newFolderName.trim())
+                            folderToRename = null
+                            newFolderName = ""
+                        }
+                    }
+                ) { Text("Переименовать") }
+            },
+            dismissButton = { 
+                TextButton(onClick = { 
+                    folderToRename = null
+                    newFolderName = ""
+                }) { Text("Отмена") } 
+            }
+        )
+    }
+
+    // === Диалог редактирования точки ===
+    if (locationToEdit != null) {
+        var editName by remember(locationToEdit) { mutableStateOf(locationToEdit!!.name) }
+        var editDescription by remember(locationToEdit) { mutableStateOf(locationToEdit!!.description) }
+        var editLat by remember(locationToEdit) { mutableStateOf(String.format(Locale.US, "%.6f", locationToEdit!!.latitude)) }
+        var editLon by remember(locationToEdit) { mutableStateOf(String.format(Locale.US, "%.6f", locationToEdit!!.longitude)) }
+        var editError by remember { mutableStateOf<String?>(null) }
+        
+        AlertDialog(
+            onDismissRequest = { locationToEdit = null },
+            title = { Text("Редактировать точку") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    OutlinedTextField(
+                        value = editName,
+                        onValueChange = { editName = it; editError = null },
+                        label = { Text("Название") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    OutlinedTextField(
+                        value = editDescription,
+                        onValueChange = { editDescription = it },
+                        label = { Text("Описание") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                        OutlinedTextField(
+                            value = editLat,
+                            onValueChange = { editLat = it; editError = null },
+                            label = { Text("Широта") },
+                            singleLine = true,
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+                            modifier = Modifier.weight(1f)
+                        )
+                        OutlinedTextField(
+                            value = editLon,
+                            onValueChange = { editLon = it; editError = null },
+                            label = { Text("Долгота") },
+                            singleLine = true,
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+                            modifier = Modifier.weight(1f)
+                        )
+                    }
+                    if (editError != null) {
+                        Text(editError!!, color = MaterialTheme.colorScheme.error,
+                            style = MaterialTheme.typography.bodySmall)
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        val lat = editLat.replace(',', '.').toDoubleOrNull()
+                        val lon = editLon.replace(',', '.').toDoubleOrNull()
+                        when {
+                            editName.isBlank() -> editError = "Введите название"
+                            lat == null || lon == null -> editError = "Некорректные координаты"
+                            lat !in -90.0..90.0 || lon !in -180.0..180.0 -> editError = "Координаты вне диапазона"
+                            else -> {
+                                val updated = locationToEdit!!.copy(
+                                    name = editName.trim(),
+                                    description = editDescription.trim(),
+                                    latitude = lat,
+                                    longitude = lon
+                                )
+                                viewModel.updateLocation(updated)
+                                locationToEdit = null
+                            }
+                        }
+                    }
+                ) { Text("Сохранить") }
+            },
+            dismissButton = { 
+                TextButton(onClick = { locationToEdit = null }) { Text("Отмена") } 
+            }
+        )
+    }
+
     if (BuildConfig.DEBUG && showLogsDialog) {
         val logContent = remember { FileLogger.getLogContent(context) }
         val crashContent = remember { FileLogger.getCrashContent(context) }
@@ -569,7 +736,8 @@ private fun FolderListItem(
     isMoveTarget: Boolean,
     onOpen: () -> Unit,
     onDelete: () -> Unit,
-    onExport: () -> Unit
+    onExport: () -> Unit,
+    onRename: () -> Unit
 ) {
     Card(
         onClick = onOpen,
@@ -583,10 +751,41 @@ private fun FolderListItem(
             Text(folder.name, style = MaterialTheme.typography.bodyLarge, color = MaterialTheme.colorScheme.onSurface,
                 modifier = Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis)
             if (!isMoveTarget) {
-                IconButton(onClick = onExport) {
-                    Icon(Icons.Default.Upload, "Экспортировать", tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                var menuExpanded by remember { mutableStateOf(false) }
+                Box {
+                    IconButton(onClick = { menuExpanded = true }) {
+                        Icon(Icons.Default.MoreVert, "Меню", tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                    DropdownMenu(
+                        expanded = menuExpanded,
+                        onDismissRequest = { menuExpanded = false }
+                    ) {
+                        DropdownMenuItem(
+                            text = { Text("Переименовать") },
+                            onClick = {
+                                menuExpanded = false
+                                onRename()
+                            },
+                            leadingIcon = { Icon(Icons.Default.Edit, null) }
+                        )
+                        DropdownMenuItem(
+                            text = { Text("Экспортировать") },
+                            onClick = {
+                                menuExpanded = false
+                                onExport()
+                            },
+                            leadingIcon = { Icon(Icons.Default.Upload, null) }
+                        )
+                        DropdownMenuItem(
+                            text = { Text("Удалить") },
+                            onClick = {
+                                menuExpanded = false
+                                onDelete()
+                            },
+                            leadingIcon = { Icon(Icons.Default.Delete, null, tint = MaterialTheme.colorScheme.error) }
+                        )
+                    }
                 }
-                IconButton(onClick = onDelete) { Icon(Icons.Default.Delete, "Удалить", tint = MaterialTheme.colorScheme.error) }
             }
         }
     }
@@ -599,7 +798,8 @@ private fun LocationListItem(
     moveMode: Boolean,
     onOpenMap: () -> Unit,
     onMove: () -> Unit,
-    onDelete: () -> Unit
+    onDelete: () -> Unit,
+    onEdit: () -> Unit
 ) {
     Card(
         onClick = onOpenMap,
@@ -616,8 +816,41 @@ private fun LocationListItem(
             }
             if (location.photoId != null) Icon(Icons.Default.Image, "Фото", tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(20.dp).padding(end = 4.dp))
             if (!moveMode) {
-                IconButton(onClick = onMove) { Icon(Icons.Default.DriveFileMove, "Переместить", tint = MaterialTheme.colorScheme.onSurfaceVariant) }
-                IconButton(onClick = onDelete) { Icon(Icons.Default.Delete, "Удалить", tint = MaterialTheme.colorScheme.error) }
+                var menuExpanded by remember { mutableStateOf(false) }
+                Box {
+                    IconButton(onClick = { menuExpanded = true }) {
+                        Icon(Icons.Default.MoreVert, "Меню", tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                    DropdownMenu(
+                        expanded = menuExpanded,
+                        onDismissRequest = { menuExpanded = false }
+                    ) {
+                        DropdownMenuItem(
+                            text = { Text("Редактировать") },
+                            onClick = {
+                                menuExpanded = false
+                                onEdit()
+                            },
+                            leadingIcon = { Icon(Icons.Default.Edit, null) }
+                        )
+                        DropdownMenuItem(
+                            text = { Text("Переместить") },
+                            onClick = {
+                                menuExpanded = false
+                                onMove()
+                            },
+                            leadingIcon = { Icon(Icons.Default.DriveFileMove, null) }
+                        )
+                        DropdownMenuItem(
+                            text = { Text("Удалить") },
+                            onClick = {
+                                menuExpanded = false
+                                onDelete()
+                            },
+                            leadingIcon = { Icon(Icons.Default.Delete, null, tint = MaterialTheme.colorScheme.error) }
+                        )
+                    }
+                }
             }
         }
     }
@@ -631,7 +864,8 @@ private fun FileListItem(
     onPreview: () -> Unit,
     onExport: () -> Unit,
     onMove: () -> Unit,
-    onDelete: () -> Unit
+    onDelete: () -> Unit,
+    onRename: () -> Unit
 ) {
     Card(
         onClick = onPreview,
@@ -653,9 +887,49 @@ private fun FileListItem(
                 Text(file.mimeType, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
             if (!moveMode) {
-                IconButton(onClick = onMove) { Icon(Icons.Default.DriveFileMove, "Переместить", tint = MaterialTheme.colorScheme.onSurfaceVariant) }
-                IconButton(onClick = onExport) { Icon(Icons.Default.Share, "Экспорт", tint = MaterialTheme.colorScheme.onSurfaceVariant) }
-                IconButton(onClick = onDelete) { Icon(Icons.Default.Delete, "Удалить", tint = MaterialTheme.colorScheme.error) }
+                var menuExpanded by remember { mutableStateOf(false) }
+                Box {
+                    IconButton(onClick = { menuExpanded = true }) {
+                        Icon(Icons.Default.MoreVert, "Меню", tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                    DropdownMenu(
+                        expanded = menuExpanded,
+                        onDismissRequest = { menuExpanded = false }
+                    ) {
+                        DropdownMenuItem(
+                            text = { Text("Переименовать") },
+                            onClick = {
+                                menuExpanded = false
+                                onRename()
+                            },
+                            leadingIcon = { Icon(Icons.Default.Edit, null) }
+                        )
+                        DropdownMenuItem(
+                            text = { Text("Переместить") },
+                            onClick = {
+                                menuExpanded = false
+                                onMove()
+                            },
+                            leadingIcon = { Icon(Icons.Default.DriveFileMove, null) }
+                        )
+                        DropdownMenuItem(
+                            text = { Text("Экспорт") },
+                            onClick = {
+                                menuExpanded = false
+                                onExport()
+                            },
+                            leadingIcon = { Icon(Icons.Default.Share, null) }
+                        )
+                        DropdownMenuItem(
+                            text = { Text("Удалить") },
+                            onClick = {
+                                menuExpanded = false
+                                onDelete()
+                            },
+                            leadingIcon = { Icon(Icons.Default.Delete, null, tint = MaterialTheme.colorScheme.error) }
+                        )
+                    }
+                }
             }
         }
     }

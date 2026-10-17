@@ -70,4 +70,19 @@ class FolderRepositoryContainerImpl(
             Result.failure(e)
         }
     }
+
+    override suspend fun renameFolder(id: String, newName: String) = mutex.withLock {
+        try {
+            val l = load()
+            val index = l.indexOfFirst { it.id == id }
+            if (index >= 0) {
+                l[index] = l[index].copy(name = newName)
+                save(l)
+            }
+            Result.success(Unit)
+        } catch (e: Exception) {
+            FileLogger.e("FolderContainerRepo", "renameFolder failed", e)
+            Result.failure(e)
+        }
+    }
 }

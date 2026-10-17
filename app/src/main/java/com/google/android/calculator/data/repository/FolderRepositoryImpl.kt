@@ -9,6 +9,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import com.google.android.calculator.utils.FileLogger
 
 class FolderRepositoryImpl(
     context: Context,
@@ -73,6 +74,21 @@ class FolderRepositoryImpl(
                 save(l)
                 Result.success(Unit)
             } catch (e: Exception) { Result.failure(e) }
+        }
+    }
+
+    override suspend fun renameFolder(id: String, newName: String): Result<Unit> {
+        return try {
+            val folders = getFolders().toMutableList()
+            val index = folders.indexOfFirst { it.id == id }
+            if (index >= 0) {
+                folders[index] = folders[index].copy(name = newName)
+                save(folders)
+            }
+            Result.success(Unit)
+        } catch (e: Exception) {
+            FileLogger.e("FolderRepositoryImpl", "renameFolder failed", e)
+            Result.failure(e)
         }
     }
 }

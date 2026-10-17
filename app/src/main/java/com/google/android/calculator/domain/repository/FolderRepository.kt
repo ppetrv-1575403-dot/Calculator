@@ -6,4 +6,5 @@ interface FolderRepository {
     suspend fun addFolder(name: String, parentId: String?): Result<Unit>
     suspend fun deleteFolder(id: String): Result<Unit>
     suspend fun reparentSubfolders(oldParentId: String, newParentId: String?): Result<Unit>
+    suspend fun renameFolder(id: String, newName: String): Result<Unit>
 }

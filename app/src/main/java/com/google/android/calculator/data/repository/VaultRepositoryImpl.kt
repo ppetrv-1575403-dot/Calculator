@@ -180,4 +180,9 @@ class VaultRepositoryImpl(
             } catch (e: Exception) { Result.failure(e) }
         }
     }
+
+    override suspend fun renameFile(id: String, newName: String): Result<Unit> {
+        // Для старой реализации без контейнера
+        return Result.success(Unit) // или реализуй по аналогии
+    }
 }

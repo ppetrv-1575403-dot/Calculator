@@ -122,4 +122,8 @@ class VaultRepositoryContainerImpl(
             Result.failure(e)
         }
     }
+
+    override suspend fun renameFile(id: String, newName: String): Result<Unit> {
+        return container.renameEntry(id, newName)
+    }
 }

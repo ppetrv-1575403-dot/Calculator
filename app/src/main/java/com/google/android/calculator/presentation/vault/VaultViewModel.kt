@@ -40,19 +40,12 @@ class VaultViewModel(
     private val folderStack = ArrayDeque<VaultFolder?>()
 
     init {
-        // ⭐ Сначала восстанавливаем папку, потом загружаем содержимое
         viewModelScope.launch {
             restoreLastFolder()
             loadItems()
         }
     }
 
-    /**
-     * ⭐ Восстанавливает последнюю открытую папку и корректный стек навигации.
-     * ВАЖНО: в основании стека всегда лежит null (корень хранилища),
-     * чтобы кнопка "Назад" из папки первого уровня возвращала в корень,
-     * а не выходила из хранилища.
-     */
     private suspend fun restoreLastFolder() {
         val slotId = VaultManager.currentSlotId
         val lastFolderId = appContainer.getLastVisitedFolderId(slotId) ?: return
@@ -65,14 +58,11 @@ class VaultViewModel(
             val targetFolder = allFolders.firstOrNull { it.id == lastFolderId }
             
             if (targetFolder == null) {
-                // Папка была удалена — сбрасываем сохранение
                 FileLogger.w("VaultViewModel", "Saved folder $lastFolderId no longer exists, resetting to root")
                 appContainer.setLastVisitedFolderId(slotId, null)
                 return
             }
             
-            // Собираем цепочку родителей: [корневая_папка, ..., целевая_папка]
-            // Защита от циклических ссылок через seen
             val chain = mutableListOf<VaultFolder>()
             val seen = mutableSetOf<String>()
             var node: VaultFolder? = targetFolder
@@ -83,10 +73,6 @@ class VaultViewModel(
                 node = if (pid != null) allFolders.firstOrNull { it.id == pid } else null
             }
             
-            // ⭐ ЗАПОЛНЯЕМ СТЕК:
-            // - в основании всегда null (корень хранилища)
-            // - затем все промежуточные папки
-            // - текущей папкой становится последняя в цепочке
             folderStack.clear()
             folderStack.addLast(null)
             for (i in 0 until chain.size - 1) {
@@ -160,6 +146,13 @@ class VaultViewModel(
         loadItems()
         return true
     }
+    
+    fun navigateToRoot() {
+        folderStack.clear()
+        currentFolder = null
+        saveCurrentFolder()
+        loadItems()
+    }
 
     fun createFolder(name: String) {
         viewModelScope.launch {
@@ -174,10 +167,24 @@ class VaultViewModel(
         }
     }
 
+    fun renameFolder(folder: VaultFolder, newName: String) {
+        if (newName.isBlank() || newName == folder.name) return
+        
+        viewModelScope.launch {
+            try {
+                withContext(Dispatchers.IO) {
+                    appContainer.folderRepository.renameFolder(folder.id, newName.trim())
+                }
+                loadItems()
+            } catch (e: Exception) {
+                FileLogger.e("VaultViewModel", "Error renaming folder", e)
+            }
+        }
+    }
+
     fun deleteFolder(folder: VaultFolder) {
         viewModelScope.launch {
             try {
-                // ⭐ Объявляем переменную ДО блока withContext, чтобы она была доступна после
                 val foldersToDeleteIds = mutableListOf<String>()
                 
                 withContext(Dispatchers.IO) {
@@ -212,7 +219,6 @@ class VaultViewModel(
                     }
                 }
                 
-                // ⭐ Теперь foldersToDeleteIds доступна здесь
                 val currentId = currentFolder?.id
                 if (currentId != null && foldersToDeleteIds.contains(currentId)) {
                     currentFolder = null
@@ -242,6 +248,21 @@ class VaultViewModel(
             }
         }
     }
+    
+    fun renameFile(file: VaultFile, newName: String) {
+        if (newName.isBlank() || newName == file.originalName) return
+        
+        viewModelScope.launch {
+            try {
+                withContext(Dispatchers.IO) {
+                    repository.renameFile(file.id, newName.trim())
+                }
+                loadItems()
+            } catch (e: Exception) {
+                FileLogger.e("VaultViewModel", "Error renaming file", e)
+            }
+        }
+    }
 
     fun deleteLocation(id: String) {
         viewModelScope.launch {
@@ -256,6 +277,19 @@ class VaultViewModel(
         }
     }
     
+    fun updateLocation(location: SavedLocation) {
+        viewModelScope.launch {
+            try {
+                withContext(Dispatchers.IO) {
+                    appContainer.locationRepository.updateLocation(location)
+                }
+                loadItems()
+            } catch (e: Exception) {
+                FileLogger.e("VaultViewModel", "Error updating location", e)
+            }
+        }
+    }
+
     fun prepareExport(file: VaultFile) {
         fileToExport = file
         appContainer.setFileOperationInProgress(true)

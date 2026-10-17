@@ -420,6 +420,23 @@ class VaultContainer(
         }
     }
 
+    suspend fun renameEntry(id: String, newName: String): Result<Unit> = mutex.withLock {
+        synchronized(stateLock) {
+            try {
+                val i = index.indexOfFirst { it.id == id }
+                FileLogger.d("VaultContainer", "renameEntry: id=$id, newName=$newName, foundIndex=$i")
+                if (i >= 0) {
+                    index[i] = index[i].copy(originalName = newName)
+                    appendIndex()
+                }
+                Result.success(Unit)
+            } catch (e: Exception) {
+                FileLogger.e("VaultContainer", "renameEntry FAILED: $id", e)
+                Result.failure(e)
+            }
+        }
+    }
+
     suspend fun putMetaLines(key: String, lines: List<String>): Result<Unit> =
         putEntryBytes(META_PREFIX + key, key, "text/plain", null,
             lines.joinToString("\n").toByteArray(StandardCharsets.UTF_8))
