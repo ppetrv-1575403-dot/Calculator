@@ -4,6 +4,7 @@ import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.net.Uri
+import android.provider.MediaStore
 import android.widget.Toast
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -109,16 +110,17 @@ fun FilePickerScreen(
     val isSearchMode = filter != FileFilter.ALL
     val displayFiles = if (isSearchMode) searchResults else allFiles
 
+    // ⭐ ИСПРАВЛЕНО: используем MediaStore для быстрого поиска
     LaunchedEffect(currentPath, filter) {
         isLoading = true
         if (filter == FileFilter.ALL) {
+            // Для локальной навигации используем старый метод
             allFiles = withContext(Dispatchers.IO) { loadFiles(currentPath) }
             searchResults = emptyList()
         } else {
+            // ⭐ Для фильтров используем MediaStore (быстро!)
             searchResults = withContext(Dispatchers.IO) {
-                val out = mutableListOf<PickerFileItem>()
-                collectFilesFiltered(File(currentPath), filter, out)
-                out.sortedBy { it.name.lowercase() }
+                loadFilesFromMediaStore(context, filter, currentPath)
             }
             allFiles = emptyList()
         }
@@ -428,12 +430,10 @@ fun FilePickerScreen(
                 }
             }
 
-            // ⭐ Основной контент — без центрирования загрузки/пустоты
             Box(Modifier.weight(1f)) {
                 when {
-                    // Загрузка больше не показывается здесь — только в нижней панели
                     displayFiles.isEmpty() && !isLoading -> {
-                        // Пустой список тоже не показываем здесь — только в нижней панели
+                        // Пустой список
                     }
                     viewMode == ViewMode.LIST -> {
                         LazyColumn(
@@ -529,7 +529,6 @@ fun FilePickerScreen(
                     }
                 }
 
-                // Прогресс обработки (шифрование/импорт) остается по центру
                 if (isProcessing || isImportingFolder) {
                     Box(
                         modifier = Modifier
@@ -554,7 +553,6 @@ fun FilePickerScreen(
                 }
             }
 
-            // ⭐ Единая нижняя панель с загрузкой, пустотой и статусами
             BottomStatusPanel(
                 isLoading = isLoading,
                 isEmpty = displayFiles.isEmpty() && !isLoading,
@@ -566,13 +564,11 @@ fun FilePickerScreen(
                 importFolderMode = importFolderMode,
                 folderPickerMode = folderPickerMode,
                 importMode = importMode,
-                isImporting = isImportingFolder  // ⭐ новый параметр
+                isImporting = isImportingFolder
             )
         }
     }
 }
-
-// ==================== Единая нижняя панель статусов ====================
 
 @Composable
 private fun BottomStatusPanel(
@@ -586,7 +582,7 @@ private fun BottomStatusPanel(
     importFolderMode: Boolean,
     folderPickerMode: Boolean,
     importMode: Boolean,
-    isImporting: Boolean = false  // ⭐ новый параметр
+    isImporting: Boolean = false
 ) {
     val (icon, text, showProgress) = when {
         isImporting -> Triple(Icons.Default.Download, "Импортируется, пожалуйста, подождите...", true)
@@ -670,8 +666,6 @@ private fun BottomStatusPanel(
         }
     }
 }
-
-// ==================== Остальные функции (без изменений) ====================
 
 private fun relativePath(basePath: String, filePath: String): String {
     val rel = filePath.removePrefix(basePath).trimStart('/')
@@ -969,7 +963,7 @@ private fun handleFileClick(
                     }
                 } catch (e: Exception) {
                     withContext(Dispatchers.Main) {
-                        Toast.makeText(context, "Ошибка: ${e.message}", Toast.LENGTH_LONG).show()
+                        Toast.makeText(context, "Ошибка: ${e.message}", Toast.LENGTH_LONG)
                     }
                 } finally {
                     onProcessingChange(false, "")
@@ -993,6 +987,82 @@ private suspend fun buildPhotoDraft(context: Context, file: PickerFileItem): Pho
             source = coords?.source
         )
     }
+
+// ⭐ НОВАЯ ФУНКЦИЯ: быстрый поиск через MediaStore API
+private fun loadFilesFromMediaStore(
+    context: Context,
+    filter: FileFilter,
+    basePath: String
+): List<PickerFileItem> {
+    val results = mutableListOf<PickerFileItem>()
+    val contentResolver = context.contentResolver
+    
+    // Определяем URI и фильтр в зависимости от типа
+    val (uri, selection, selectionArgs) = when (filter) {
+        FileFilter.IMAGES -> {
+            Triple(
+                MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
+                null,
+                null
+            )
+        }
+        FileFilter.DOCUMENTS -> {
+            Triple(
+                MediaStore.Files.getContentUri("external"),
+                "${MediaStore.Files.FileColumns.MIME_TYPE} LIKE ? OR ${MediaStore.Files.FileColumns.MIME_TYPE} LIKE ? OR ${MediaStore.Files.FileColumns.MIME_TYPE} LIKE ?",
+                arrayOf("text/%", "application/pdf", "application/msword")
+            )
+        }
+        FileFilter.ZIP -> {
+            Triple(
+                MediaStore.Files.getContentUri("external"),
+                "${MediaStore.Files.FileColumns.DISPLAY_NAME} LIKE ?",
+                arrayOf("%.zip")
+            )
+        }
+        FileFilter.ALL -> {
+            // Не должно вызываться для ALL
+            return results
+        }
+    }
+    
+    val projection = arrayOf(
+        MediaStore.Files.FileColumns.DISPLAY_NAME,
+        MediaStore.Files.FileColumns.DATA,
+        MediaStore.Files.FileColumns.MIME_TYPE,
+        MediaStore.Files.FileColumns.SIZE
+    )
+    
+    val sortOrder = "${MediaStore.Files.FileColumns.DISPLAY_NAME} ASC"
+    
+    try {
+        contentResolver.query(uri, projection, selection, selectionArgs, sortOrder)?.use { cursor ->
+            val nameColumn = cursor.getColumnIndexOrThrow(MediaStore.Files.FileColumns.DISPLAY_NAME)
+            val pathColumn = cursor.getColumnIndexOrThrow(MediaStore.Files.FileColumns.DATA)
+            val mimeColumn = cursor.getColumnIndexOrThrow(MediaStore.Files.FileColumns.MIME_TYPE)
+            val sizeColumn = cursor.getColumnIndexOrThrow(MediaStore.Files.FileColumns.SIZE)
+            
+            while (cursor.moveToNext()) {
+                val name = cursor.getString(nameColumn)
+                val path = cursor.getString(pathColumn)
+                val mime = cursor.getString(mimeColumn) ?: "application/octet-stream"
+                val size = cursor.getLong(sizeColumn)
+                
+                // Фильтруем по базовому пути (если указан)
+                if (path.startsWith(basePath)) {
+                    results.add(PickerFileItem(name, path, mime, false, size))
+                }
+            }
+        }
+    } catch (e: Exception) {
+        // Если MediaStore недоступен, fallback на старый метод
+        val out = mutableListOf<PickerFileItem>()
+        collectFilesFiltered(File(basePath), filter, out)
+        return out.sortedBy { it.name.lowercase() }
+    }
+    
+    return results.sortedBy { it.name.lowercase() }
+}
 
 private fun collectFilesFiltered(
     dir: File,
