@@ -13,6 +13,7 @@ import com.google.android.calculator.domain.usecase.AddFileUseCase
 import com.google.android.calculator.domain.usecase.GetFilesUseCase
 import com.google.android.calculator.domain.repository.VaultRepository
 import com.google.android.calculator.utils.FileLogger
+import com.google.android.calculator.utils.VaultManager
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -38,13 +39,75 @@ class VaultViewModel(
 
     private val folderStack = ArrayDeque<VaultFolder?>()
 
-    init { loadItems() }
+    init {
+        // ⭐ Сначала восстанавливаем папку, потом загружаем содержимое
+        viewModelScope.launch {
+            restoreLastFolder()
+            loadItems()
+        }
+    }
+
+    /**
+     * ⭐ Восстанавливает последнюю открытую папку и корректный стек навигации.
+     * ВАЖНО: в основании стека всегда лежит null (корень хранилища),
+     * чтобы кнопка "Назад" из папки первого уровня возвращала в корень,
+     * а не выходила из хранилища.
+     */
+    private suspend fun restoreLastFolder() {
+        val slotId = VaultManager.currentSlotId
+        val lastFolderId = appContainer.getLastVisitedFolderId(slotId) ?: return
+        
+        try {
+            val allFolders = withContext(Dispatchers.IO) {
+                appContainer.folderRepository.getFolders()
+            }
+            
+            val targetFolder = allFolders.firstOrNull { it.id == lastFolderId }
+            
+            if (targetFolder == null) {
+                // Папка была удалена — сбрасываем сохранение
+                FileLogger.w("VaultViewModel", "Saved folder $lastFolderId no longer exists, resetting to root")
+                appContainer.setLastVisitedFolderId(slotId, null)
+                return
+            }
+            
+            // Собираем цепочку родителей: [корневая_папка, ..., целевая_папка]
+            // Защита от циклических ссылок через seen
+            val chain = mutableListOf<VaultFolder>()
+            val seen = mutableSetOf<String>()
+            var node: VaultFolder? = targetFolder
+            while (node != null && node.id !in seen) {
+                seen.add(node.id)
+                chain.add(0, node)
+                val pid = node.parentId
+                node = if (pid != null) allFolders.firstOrNull { it.id == pid } else null
+            }
+            
+            // ⭐ ЗАПОЛНЯЕМ СТЕК:
+            // - в основании всегда null (корень хранилища)
+            // - затем все промежуточные папки
+            // - текущей папкой становится последняя в цепочке
+            folderStack.clear()
+            folderStack.addLast(null)
+            for (i in 0 until chain.size - 1) {
+                folderStack.addLast(chain[i])
+            }
+            currentFolder = chain.last()
+            
+            FileLogger.i("VaultViewModel", "Restored folder: '${currentFolder?.name}', stack depth: ${folderStack.size}")
+        } catch (e: Exception) {
+            FileLogger.e("VaultViewModel", "Error restoring last folder", e)
+        }
+    }
+
+    private fun saveCurrentFolder() {
+        val slotId = VaultManager.currentSlotId
+        appContainer.setLastVisitedFolderId(slotId, currentFolder?.id)
+    }
 
     fun refresh() { loadItems() }
 
     private fun loadItems() {
-        // ⭐ Защита: не загружаем данные, если контейнер заблокирован
-        // Это предотвращает перезапись UI пустым списком при блокировке
         val container = appContainer.getActiveContainer()
         if (container != null && container.isLocked()) {
             FileLogger.w("VaultViewModel", "loadItems skipped: container is locked")
@@ -70,8 +133,6 @@ class VaultViewModel(
                     folders + locations + files
                 }
                 
-                // ⭐ Дополнительная защита: не перезаписываем, если получили пустой список при ошибке
-                // Если items уже содержит данные, и мы получили пустой результат — это подозрительно
                 if (result.isEmpty() && items.isNotEmpty() && container?.isLocked() == true) {
                     FileLogger.w("VaultViewModel", "loadItems: empty result ignored (container locked)")
                 } else {
@@ -79,8 +140,6 @@ class VaultViewModel(
                 }
             } catch (e: Exception) {
                 FileLogger.e("VaultViewModel", "Error loading items", e)
-                // ⭐ Не перезаписываем items при ошибке — сохраняем текущее состояние
-                // items = emptyList() // УБРАНО!
             } finally {
                 isLoading = false
             }
@@ -90,12 +149,14 @@ class VaultViewModel(
     fun openFolder(folder: VaultFolder) {
         folderStack.addLast(currentFolder)
         currentFolder = folder
+        saveCurrentFolder()
         loadItems()
     }
 
     fun navigateUpFolder(): Boolean {
         if (folderStack.isEmpty()) return false
         currentFolder = folderStack.removeLast()
+        saveCurrentFolder()
         loadItems()
         return true
     }
@@ -116,9 +177,12 @@ class VaultViewModel(
     fun deleteFolder(folder: VaultFolder) {
         viewModelScope.launch {
             try {
+                // ⭐ Объявляем переменную ДО блока withContext, чтобы она была доступна после
+                val foldersToDeleteIds = mutableListOf<String>()
+                
                 withContext(Dispatchers.IO) {
                     val allFolders = appContainer.folderRepository.getFolders()
-                    val foldersToDeleteIds = mutableListOf(folder.id)
+                    foldersToDeleteIds.add(folder.id)
                     
                     fun collectSubfolders(parentId: String) {
                         val children = allFolders.filter { it.parentId == parentId }
@@ -148,7 +212,14 @@ class VaultViewModel(
                     }
                 }
                 
-                if (currentFolder?.id == folder.id) {
+                // ⭐ Теперь foldersToDeleteIds доступна здесь
+                val currentId = currentFolder?.id
+                if (currentId != null && foldersToDeleteIds.contains(currentId)) {
+                    currentFolder = null
+                    folderStack.clear()
+                    saveCurrentFolder()
+                    loadItems()
+                } else if (currentFolder?.id == folder.id) {
                     navigateUpFolder()
                 } else {
                     loadItems()
@@ -184,7 +255,7 @@ class VaultViewModel(
             }
         }
     }
-
+    
     fun prepareExport(file: VaultFile) {
         fileToExport = file
         appContainer.setFileOperationInProgress(true)

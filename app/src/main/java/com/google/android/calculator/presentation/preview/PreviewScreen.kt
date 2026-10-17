@@ -22,6 +22,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -91,7 +92,6 @@ fun PreviewScreen(
         }
     }
     
-    // ⭐ ИСПРАВЛЕНО: находим файл по ID и используем ЕГО реальный folderId
     LaunchedEffect(fileId, folderId) {
         isLoading = true
         try {
@@ -99,19 +99,15 @@ fun PreviewScreen(
                 appContainer.vaultRepository.getFiles()
             }
             
-            // ⭐ Сначала ищем файл по ID
             val targetFile = allVaultFiles.firstOrNull { it.id == fileId }
             
             val files = if (targetFile != null) {
-                // ⭐ Если нашли файл, фильтруем по его РЕАЛЬНОМУ folderId
-                // Это гарантирует, что свайпы будут работать в правильной папке
                 val realFolderId = targetFile.folderId
                 FileLogger.d("PreviewScreen", "Found file $fileId in folder $realFolderId (passed folderId was $folderId)")
                 allVaultFiles
                     .filter { it.folderId == realFolderId }
                     .sortedBy { it.originalName.lowercase() }
             } else {
-                // Файл не найден (маловероятно), используем переданный folderId
                 FileLogger.w("PreviewScreen", "File $fileId not found, using passed folderId=$folderId")
                 allVaultFiles
                     .filter { it.folderId == folderId }
@@ -404,7 +400,14 @@ private fun VideoPlayerView(
 }
 
 @Composable
-private fun TopBar(fileName: String, onBack: () -> Unit, modifier: Modifier = Modifier) {
+private fun TopBar(
+    fileName: String,
+    onBack: () -> Unit,
+    modifier: Modifier = Modifier,
+    onToggleTheme: (() -> Unit)? = null,
+    isDarkTheme: Boolean = true,
+    contentColor: Color = Color.White  // ⭐ Цвет иконок и текста (по умолчанию белый)
+) {
     Row(
         modifier = modifier
             .fillMaxWidth()
@@ -412,18 +415,29 @@ private fun TopBar(fileName: String, onBack: () -> Unit, modifier: Modifier = Mo
         verticalAlignment = Alignment.CenterVertically
     ) {
         IconButton(onClick = onBack) {
-            Icon(Icons.Default.ArrowBack, "Назад", tint = Color.White, modifier = Modifier.size(24.dp))
+            Icon(Icons.Default.ArrowBack, "Назад", tint = contentColor, modifier = Modifier.size(24.dp))
         }
         Spacer(Modifier.width(12.dp))
         Text(
             fileName,
-            color = Color.White.copy(alpha = 0.9f),
+            color = contentColor.copy(alpha = 0.9f),
             fontSize = 14.sp,
             fontWeight = FontWeight.Medium,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
             modifier = Modifier.weight(1f)
         )
+        
+        if (onToggleTheme != null) {
+            IconButton(onClick = onToggleTheme) {
+                Icon(
+                    if (isDarkTheme) Icons.Default.LightMode else Icons.Default.DarkMode,
+                    if (isDarkTheme) "Светлая тема" else "Тёмная тема",
+                    tint = contentColor,
+                    modifier = Modifier.size(24.dp)
+                )
+            }
+        }
     }
 }
 
@@ -608,17 +622,25 @@ private fun DocumentPreview(
     }
     var showControls by remember { mutableStateOf(true) }
     
+    var isDarkTheme by rememberSaveable { mutableStateOf(true) }
+    
+    // ⭐ Цвета в зависимости от темы
+    val backgroundColor = if (isDarkTheme) Color(0xFF121212) else Color(0xFFF5F5F5)
+    val textColor = if (isDarkTheme) Color(0xFFDDDDDD) else Color(0xFF1A1A1A)
+    // ⭐ Цвет элементов управления: белый на тёмном фоне, тёмный на светлом
+    val controlsColor = if (isDarkTheme) Color.White else Color(0xFF1A1A1A)
+    
     Box(
         modifier = Modifier
             .fillMaxSize()
-            .background(Color(0xFF121212))
+            .background(backgroundColor)
             .pointerInput(Unit) {
                 detectTapGestures(onTap = { showControls = !showControls })
             }
     ) {
         Text(
             text = text,
-            color = Color(0xFFDDDDDD),
+            color = textColor,
             fontSize = 14.sp,
             lineHeight = 20.sp,
             fontFamily = FontFamily.Monospace,
@@ -637,6 +659,9 @@ private fun DocumentPreview(
             TopBar(
                 fileName = fileName,
                 onBack = onBack,
+                onToggleTheme = { isDarkTheme = !isDarkTheme },
+                isDarkTheme = isDarkTheme,
+                contentColor = controlsColor,  // ⭐ Передаём цвет, подходящий к фону
                 modifier = Modifier.align(Alignment.TopCenter)
             )
         }

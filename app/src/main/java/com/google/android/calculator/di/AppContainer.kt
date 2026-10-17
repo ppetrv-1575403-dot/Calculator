@@ -45,6 +45,9 @@ class AppContainer(context: Context) {
     private val folderRepoCache = mutableMapOf<String, FolderRepository>()
     private val containerCache = mutableMapOf<String, VaultContainer>()
     
+    // ⭐ Сохраняем последнюю открытую папку для каждого slot
+    private val lastVisitedFolderIds = mutableMapOf<String, String?>()
+
     private val cacheLock = Any()
 
     private fun containerForSlot(slotId: String): VaultContainer? {
@@ -195,5 +198,20 @@ class AppContainer(context: Context) {
         val slotId = VaultManager.currentSlotId
         if (!VaultManager.containerEnabled(slotId)) return null
         return containerCache[slotId]
+    }
+
+    /**
+     * ⭐ Сохраняет последнюю открытую папку для slot
+     */
+    fun setLastVisitedFolderId(slotId: String, folderId: String?) {
+        lastVisitedFolderIds[slotId] = folderId
+        FileLogger.d("AppContainer", "Last visited folder set: slot=$slotId, folder=$folderId")
+    }
+
+    /**
+     * ⭐ Возвращает последнюю открытую папку для slot
+     */
+    fun getLastVisitedFolderId(slotId: String): String? {
+        return lastVisitedFolderIds[slotId]
     }
 }
