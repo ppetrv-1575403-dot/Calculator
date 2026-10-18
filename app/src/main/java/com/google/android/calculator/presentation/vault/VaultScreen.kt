@@ -7,6 +7,8 @@ import android.os.Environment
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -47,7 +49,7 @@ import kotlinx.coroutines.withContext
 import java.io.File
 import java.util.Locale
 
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
 @Composable
 fun VaultScreen(
     appContainer: AppContainer,
@@ -63,10 +65,9 @@ fun VaultScreen(
     onImportFolder: () -> Unit
 ) {
     val context = LocalContext.current
-    val viewModel = remember {
-        VaultViewModel(appContainer)
-    }
+    val viewModel = remember { VaultViewModel(appContainer) }
     val scope = rememberCoroutineScope()
+    
     var fabExpanded by remember { mutableStateOf(false) }
     var showCreateFolderDialog by remember { mutableStateOf(false) }
     var folderName by remember { mutableStateOf("") }
@@ -78,10 +79,13 @@ fun VaultScreen(
     var newFolderName by remember { mutableStateOf("") }
     var locationToEdit by remember { mutableStateOf<SavedLocation?>(null) }
     
+    var showDeleteSelectedDialog by remember { mutableStateOf(false) }
+    
     var hasStoragePermission by remember { 
         mutableStateOf(PermissionUtils.hasManageExternalStorage()) 
     }
     
+    // ⭐ СТРОГИЙ ПОРЯДОК ОБЪЯВЛЕНИЯ ПЕРЕМЕННЫХ (КРИТИЧНО ДЛЯ КОМПИЛЯТОРА)
     val currentSlotId = VaultManager.currentSlotId
     var lastContainerEnabled by remember { mutableStateOf(VaultManager.containerEnabled(currentSlotId)) }
     
@@ -92,27 +96,15 @@ fun VaultScreen(
                 hasStoragePermission = PermissionUtils.hasManageExternalStorage()
                 
                 val currentContainerEnabled = VaultManager.containerEnabled(currentSlotId)
-                FileLogger.d("VaultScreen", "ON_RESUME: containerEnabled=$currentContainerEnabled, lastContainerEnabled=$lastContainerEnabled")
-                
                 if (currentContainerEnabled != lastContainerEnabled) {
-                    FileLogger.i("VaultScreen", "Container state changed from $lastContainerEnabled to $currentContainerEnabled")
                     lastContainerEnabled = currentContainerEnabled
-                    
-                    // ⭐ Полностью сбрасываем кэш
                     appContainer.invalidateCacheForSlot(currentSlotId)
-                    
-                    // ⭐ Сбрасываем навигацию (новая структура данных)
-                    viewModel.resetNavigation()
-                    
-                    // ⭐ Принудительно перезагружаем
                     viewModel.refresh()
                 }
             }
         }
         lifecycleOwner.lifecycle.addObserver(observer)
-        onDispose {
-            lifecycleOwner.lifecycle.removeObserver(observer)
-        }
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
     }
     
     var fileToDelete by remember { mutableStateOf<VaultFile?>(null) }
@@ -133,13 +125,20 @@ fun VaultScreen(
 
     val isDecoyMode = VaultManager.currentMode == VaultMode.DECOY
     
-    LaunchedEffect(Unit) { appContainer.vaultRefresh.collect { viewModel.refresh() } }
+    val refreshTrigger by appContainer.vaultRefresh.collectAsState()
+    LaunchedEffect(refreshTrigger) {
+        if (refreshTrigger > 0) {
+            viewModel.forceRefresh()
+        }
+    }
 
+    // ⭐ 1. Сначала объявляем валидность контейнера
     val isContainerEnabled = remember { VaultManager.containerEnabled(currentSlotId) }
     val isContainerValid = remember(isContainerEnabled, currentSlotId) {
         if (isContainerEnabled) VaultManager.isContainerValid(currentSlotId) else true
     }
-
+    
+    // ⭐ 2. И только ПОСЛЕ этого объявляем диалог, который зависит от isContainerValid
     var showMissingContainerDialog by remember { mutableStateOf(!isContainerValid) }
 
     val exportLauncher = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("*/*")) { uri ->
@@ -194,46 +193,45 @@ fun VaultScreen(
     Scaffold(
         contentWindowInsets = WindowInsets(0, 0, 0, 0),
         floatingActionButton = {
-            Column(horizontalAlignment = Alignment.End, modifier = Modifier.navigationBarsPadding().padding(16.dp)) {
-                if (fabExpanded) {
-                    MiniFab(Icons.Default.Add, "Файл") {
-                        fabExpanded = false
-                        if (hasStoragePermission) {
-                            onNavigateToPicker(currentFolderId)
-                        } else {
-                            appContainer.setFileOperationInProgress(true)
-                            permissionSettingsLauncher.launch(
-                                Intent(android.provider.Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION).apply {
-                                    data = Uri.parse("package:${context.packageName}")
-                                }
-                            )
+            if (!viewModel.selectionMode) {
+                Column(horizontalAlignment = Alignment.End, modifier = Modifier.navigationBarsPadding().padding(16.dp)) {
+                    if (fabExpanded) {
+                        MiniFab(Icons.Default.Add, "Файл") {
+                            fabExpanded = false
+                            if (hasStoragePermission) {
+                                onNavigateToPicker(currentFolderId)
+                            } else {
+                                appContainer.setFileOperationInProgress(true)
+                                permissionSettingsLauncher.launch(
+                                    Intent(android.provider.Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION).apply {
+                                        data = Uri.parse("package:${context.packageName}")
+                                    }
+                                )
+                            }
                         }
-                    }
 
-                    if (!isDecoyMode) {
-                        MiniFab(Icons.Default.AddLocation, "Точка") { fabExpanded = false; onAddLocation(currentFolderId) }
+                        if (!isDecoyMode) {
+                            MiniFab(Icons.Default.AddLocation, "Точка") { fabExpanded = false; onAddLocation(currentFolderId) }
+                            Spacer(Modifier.height(8.dp))
+                            MiniFab(Icons.Default.AddAPhoto, "Фото-точка") { fabExpanded = false; onAddPhotoLocation(currentFolderId) }
+                            Spacer(Modifier.height(8.dp))
+                        }
+                        
+                        MiniFab(Icons.Default.CreateNewFolder, "Папка") { fabExpanded = false; folderName = ""; showCreateFolderDialog = true }
                         Spacer(Modifier.height(8.dp))
-                    
-                        MiniFab(Icons.Default.AddAPhoto, "Фото-точка") { fabExpanded = false; onAddPhotoLocation(currentFolderId) }
+                        MiniFab(Icons.Default.Download, "Импорт ZIP") { fabExpanded = false; onImportZip(currentFolderId) }
+                        Spacer(Modifier.height(8.dp))
+                        MiniFab(Icons.Default.Folder, "Импорт папки") { fabExpanded = false; onImportFolder() }
                         Spacer(Modifier.height(8.dp))
                     }
                     
-                    MiniFab(Icons.Default.CreateNewFolder, "Папка") { fabExpanded = false; folderName = ""; showCreateFolderDialog = true }
-                    Spacer(Modifier.height(8.dp))
-                    
-                    MiniFab(Icons.Default.Download, "Импорт ZIP") { fabExpanded = false; onImportZip(currentFolderId) }
-                    Spacer(Modifier.height(8.dp))
-                    
-                    MiniFab(Icons.Default.Folder, "Импорт папки") { fabExpanded = false; onImportFolder() }
-                    Spacer(Modifier.height(8.dp))
-                }
-                
-                FloatingActionButton(
-                    onClick = { fabExpanded = !fabExpanded },
-                    containerColor = MaterialTheme.colorScheme.primary,
-                    shape = CircleShape
-                ) {
-                    Icon(if (fabExpanded) Icons.Default.Close else Icons.Default.Add, "Добавить")
+                    FloatingActionButton(
+                        onClick = { fabExpanded = !fabExpanded },
+                        containerColor = MaterialTheme.colorScheme.primary,
+                        shape = CircleShape
+                    ) {
+                        Icon(if (fabExpanded) Icons.Default.Close else Icons.Default.Add, "Добавить")
+                    }
                 }
             }
         },
@@ -241,41 +239,74 @@ fun VaultScreen(
     ) { paddingValues ->
         Column(Modifier.fillMaxSize().statusBarsPadding().padding(paddingValues).padding(16.dp)) {
 
-            Row(Modifier.fillMaxWidth().padding(bottom = 16.dp), verticalAlignment = Alignment.CenterVertically) {
-                IconButton(onClick = {
-                    if (viewModel.itemToMove != null) {
-                        viewModel.cancelMove()
-                    } else if (!viewModel.navigateUpFolder()) {
-                        onBack()
+            // ⭐ Верхняя панель: режим выбора или обычный режим
+            if (viewModel.selectionMode) {
+                Row(
+                    Modifier.fillMaxWidth().padding(bottom = 16.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    IconButton(onClick = { viewModel.cancelSelection() }) {
+                        Icon(Icons.Default.Close, "Отменить выбор", tint = MaterialTheme.colorScheme.onSurface)
                     }
-                }) {
-                    @Suppress("DEPRECATION")
-                    Icon(Icons.Default.ArrowBack, "Назад")
+                    Text(
+                        "Выбрано: ${viewModel.selectedItems.size}",
+                        style = MaterialTheme.typography.titleMedium,
+                        modifier = Modifier.padding(start = 8.dp).weight(1f)
+                    )
+                    IconButton(onClick = { viewModel.selectAll() }) {
+                        Icon(Icons.Default.SelectAll, "Выбрать все")
+                    }
+                    IconButton(
+                        onClick = { showDeleteSelectedDialog = true },
+                        enabled = viewModel.selectedItems.isNotEmpty()
+                    ) {
+                        Icon(
+                            Icons.Default.Delete,
+                            "Удалить выбранное",
+                            tint = if (viewModel.selectedItems.isNotEmpty()) 
+                                MaterialTheme.colorScheme.error 
+                            else 
+                                MaterialTheme.colorScheme.onSurface.copy(alpha = 0.38f)
+                        )
+                    }
                 }
+            } else {
+                Row(Modifier.fillMaxWidth().padding(bottom = 16.dp), verticalAlignment = Alignment.CenterVertically) {
+                    IconButton(onClick = {
+                        if (viewModel.itemToMove != null) {
+                            viewModel.cancelMove()
+                        } else if (!viewModel.navigateUpFolder()) {
+                            onBack()
+                        }
+                    }) {
+                        @Suppress("DEPRECATION")
+                        Icon(Icons.Default.ArrowBack, "Назад")
+                    }
 
-                if (viewModel.currentFolder != null && viewModel.itemToMove == null) {
-                    IconButton(onClick = { viewModel.navigateToRoot() }) {
-                        Icon(Icons.Default.Home, "В корень хранилища")
-                    }
-                }
-                
-                Text(
-                    viewModel.itemToMove?.let { "Выберите папку для перемещения" }
-                        ?: (viewModel.currentFolder?.name ?: stringResource(R.string.vault_title)),
-                    style = MaterialTheme.typography.headlineSmall,
-                    modifier = Modifier.padding(start = 8.dp).weight(1f),
-                    maxLines = 1, overflow = TextOverflow.Ellipsis
-                )
-                if (viewModel.itemToMove != null) {
-                    TextButton(onClick = { viewModel.cancelMove() }) { Text("Отмена") }
-                } else {
-                    if (BuildConfig.DEBUG) {
-                        IconButton(onClick = { showLogsDialog = true }) {
-                            Icon(Icons.Default.Description, "Логи")
+                    if (viewModel.currentFolder != null && viewModel.itemToMove == null) {
+                        IconButton(onClick = { viewModel.navigateToRoot() }) {
+                            Icon(Icons.Default.Home, "В корень хранилища")
                         }
                     }
-                    IconButton(onClick = onOpenSettings) {
-                        Icon(Icons.Default.Settings, "Настройки")
+                    
+                    Text(
+                        viewModel.itemToMove?.let { "Выберите папку для перемещения" }
+                            ?: (viewModel.currentFolder?.name ?: stringResource(R.string.vault_title)),
+                        style = MaterialTheme.typography.headlineSmall,
+                        modifier = Modifier.padding(start = 8.dp).weight(1f),
+                        maxLines = 1, overflow = TextOverflow.Ellipsis
+                    )
+                    if (viewModel.itemToMove != null) {
+                        TextButton(onClick = { viewModel.cancelMove() }) { Text("Отмена") }
+                    } else {
+                        if (BuildConfig.DEBUG) {
+                            IconButton(onClick = { showLogsDialog = true }) {
+                                Icon(Icons.Default.Description, "Логи")
+                            }
+                        }
+                        IconButton(onClick = onOpenSettings) {
+                            Icon(Icons.Default.Settings, "Настройки")
+                        }
                     }
                 }
             }
@@ -317,13 +348,19 @@ fun VaultScreen(
                                 is VaultItem.FolderItem -> FolderListItem(
                                     folder = item.folder,
                                     isMoveTarget = viewModel.itemToMove != null,
+                                    isSelected = viewModel.selectedItems.contains(item),
+                                    selectionMode = viewModel.selectionMode,
                                     onOpen = {
-                                        if (viewModel.itemToMove != null) {
-                                            viewModel.moveToFolder(item.folder)
-                                        } else {
-                                            viewModel.openFolder(item.folder)
+                                        when {
+                                            viewModel.itemToMove != null -> viewModel.moveToFolder(item.folder)
+                                            viewModel.selectionMode -> viewModel.toggleSelection(item)
+                                            else -> viewModel.openFolder(item.folder)
                                         }
                                     },
+                                    onLongClick = {
+                                        if (viewModel.itemToMove == null) viewModel.startSelection(item)
+                                    },
+                                    onCheckboxChange = { viewModel.toggleSelection(item) },
                                     onDelete = { folderToDelete = item.folder },
                                     onExport = { showExportDialog = item.folder },
                                     onRename = {
@@ -335,7 +372,19 @@ fun VaultScreen(
                                     location = item.location,
                                     isSelectedForMove = viewModel.itemToMove == item,
                                     moveMode = viewModel.itemToMove != null,
-                                    onOpenMap = { if (viewModel.itemToMove == null) onOpenMap(item.location.id) },
+                                    isSelected = viewModel.selectedItems.contains(item),
+                                    selectionMode = viewModel.selectionMode,
+                                    onOpenMap = { 
+                                        when {
+                                            viewModel.selectionMode -> viewModel.toggleSelection(item)
+                                            viewModel.itemToMove == null -> onOpenMap(item.location.id)
+                                            else -> {}
+                                        }
+                                    },
+                                    onLongClick = {
+                                        if (viewModel.itemToMove == null) viewModel.startSelection(item)
+                                    },
+                                    onCheckboxChange = { viewModel.toggleSelection(item) },
                                     onMove = { viewModel.startMove(item) },
                                     onDelete = { locationToDelete = item.location },
                                     onEdit = { locationToEdit = item.location }
@@ -344,7 +393,19 @@ fun VaultScreen(
                                     file = item.file,
                                     isSelectedForMove = viewModel.itemToMove == item,
                                     moveMode = viewModel.itemToMove != null,
-                                    onPreview = { if (viewModel.itemToMove == null) onPreviewFile(item.file.id) },
+                                    isSelected = viewModel.selectedItems.contains(item),
+                                    selectionMode = viewModel.selectionMode,
+                                    onPreview = { 
+                                        when {
+                                            viewModel.selectionMode -> viewModel.toggleSelection(item)
+                                            viewModel.itemToMove == null -> onPreviewFile(item.file.id)
+                                            else -> {}
+                                        }
+                                    },
+                                    onLongClick = {
+                                        if (viewModel.itemToMove == null) viewModel.startSelection(item)
+                                    },
+                                    onCheckboxChange = { viewModel.toggleSelection(item) },
                                     onExport = { viewModel.prepareExport(item.file) },
                                     onMove = { viewModel.startMove(item) },
                                     onDelete = { fileToDelete = item.file },
@@ -357,7 +418,13 @@ fun VaultScreen(
                         }
                     }
 
-                    if (viewModel.itemToMove != null && viewModel.currentFolder != null) {
+                    // ⭐ Нижняя панель в режиме выбора
+                    if (viewModel.selectionMode) {
+                        SelectionStatusPanel(
+                            selectedCount = viewModel.selectedItems.size,
+                            onDeleteClick = { showDeleteSelectedDialog = true }
+                        )
+                    } else if (viewModel.itemToMove != null && viewModel.currentFolder != null) {
                         Spacer(Modifier.height(8.dp))
                         Column(
                             modifier = Modifier.navigationBarsPadding(),
@@ -389,6 +456,34 @@ fun VaultScreen(
         }
     }
 
+    // ⭐ Диалог подтверждения множественного удаления
+    if (showDeleteSelectedDialog) {
+        val selectedCount = viewModel.selectedItems.size
+        AlertDialog(
+            onDismissRequest = { showDeleteSelectedDialog = false },
+            title = { Text("Удалить выбранное?") },
+            text = { 
+                Text(
+                    "Будет удалено безвозвратно: $selectedCount элемент(ов).\n\n" +
+                    "Если среди выбранных есть папки, всё их содержимое также будет удалено.",
+                    style = MaterialTheme.typography.bodyMedium
+                ) 
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        showDeleteSelectedDialog = false
+                        viewModel.deleteSelected()
+                    },
+                    colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.error)
+                ) { Text("Удалить") }
+            },
+            dismissButton = { 
+                TextButton(onClick = { showDeleteSelectedDialog = false }) { Text("Отмена") } 
+            }
+        )
+    }
+
     if (showMissingContainerDialog) {
         AlertDialog(
             onDismissRequest = { },
@@ -400,18 +495,14 @@ fun VaultScreen(
                 TextButton(onClick = { 
                     showMissingContainerDialog = false
                     onOpenSettings() 
-                }) { 
-                    Text("В настройки") 
-                }
+                }) { Text("В настройки") }
             },
             dismissButton = {
                 TextButton(onClick = {
                     VaultManager.setContainerEnabled(currentSlotId, false)
                     showMissingContainerDialog = false
                     appContainer.invalidateCacheForSlot(currentSlotId)
-                }) { 
-                    Text("Отключить контейнер") 
-                }
+                }) { Text("Отключить контейнер") }
             }
         )
     }
@@ -490,10 +581,7 @@ fun VaultScreen(
             text = { Text("Файл \"${fileToDelete!!.originalName}\" будет удалён безвозвратно.") },
             confirmButton = {
                 TextButton(
-                    onClick = {
-                        viewModel.deleteFile(fileToDelete!!)
-                        fileToDelete = null
-                    },
+                    onClick = { viewModel.deleteFile(fileToDelete!!); fileToDelete = null },
                     colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.error)
                 ) { Text("Удалить") }
             },
@@ -508,10 +596,7 @@ fun VaultScreen(
             text = { Text("Точка \"${locationToDelete!!.name}\" будет удалена безвозвратно.") },
             confirmButton = {
                 TextButton(
-                    onClick = {
-                        viewModel.deleteLocation(locationToDelete!!.id)
-                        locationToDelete = null
-                    },
+                    onClick = { viewModel.deleteLocation(locationToDelete!!.id); locationToDelete = null },
                     colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.error)
                 ) { Text("Удалить") }
             },
@@ -526,10 +611,7 @@ fun VaultScreen(
             text = { Text("Папка \"${folderToDelete!!.name}\" и всё её содержимое будут удалены безвозвратно.") },
             confirmButton = {
                 TextButton(
-                    onClick = {
-                        viewModel.deleteFolder(folderToDelete!!)
-                        folderToDelete = null
-                    },
+                    onClick = { viewModel.deleteFolder(folderToDelete!!); folderToDelete = null },
                     colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.error)
                 ) { Text("Удалить") }
             },
@@ -537,73 +619,40 @@ fun VaultScreen(
         )
     }
 
-    // === Диалог переименования файла ===
     if (fileToRename != null) {
         AlertDialog(
             onDismissRequest = { fileToRename = null },
             title = { Text("Переименовать файл") },
-            text = { 
-                OutlinedTextField(
-                    value = newFileName,
-                    onValueChange = { newFileName = it },
-                    label = { Text("Новое имя") },
-                    singleLine = true
-                ) 
-            },
+            text = { OutlinedTextField(value = newFileName, onValueChange = { newFileName = it }, label = { Text("Новое имя") }, singleLine = true) },
             confirmButton = {
-                TextButton(
-                    onClick = {
-                        if (newFileName.isNotBlank()) {
-                            viewModel.renameFile(fileToRename!!, newFileName.trim())
-                            fileToRename = null
-                            newFileName = ""
-                        }
+                TextButton(onClick = {
+                    if (newFileName.isNotBlank()) {
+                        viewModel.renameFile(fileToRename!!, newFileName.trim())
+                        fileToRename = null; newFileName = ""
                     }
-                ) { Text("Переименовать") }
+                }) { Text("Переименовать") }
             },
-            dismissButton = { 
-                TextButton(onClick = { 
-                    fileToRename = null
-                    newFileName = ""
-                }) { Text("Отмена") } 
-            }
+            dismissButton = { TextButton(onClick = { fileToRename = null; newFileName = "" }) { Text("Отмена") } }
         )
     }
 
-    // === Диалог переименования папки ===
     if (folderToRename != null) {
         AlertDialog(
             onDismissRequest = { folderToRename = null },
             title = { Text("Переименовать папку") },
-            text = { 
-                OutlinedTextField(
-                    value = newFolderName,
-                    onValueChange = { newFolderName = it },
-                    label = { Text("Новое имя") },
-                    singleLine = true
-                ) 
-            },
+            text = { OutlinedTextField(value = newFolderName, onValueChange = { newFolderName = it }, label = { Text("Новое имя") }, singleLine = true) },
             confirmButton = {
-                TextButton(
-                    onClick = {
-                        if (newFolderName.isNotBlank()) {
-                            viewModel.renameFolder(folderToRename!!, newFolderName.trim())
-                            folderToRename = null
-                            newFolderName = ""
-                        }
+                TextButton(onClick = {
+                    if (newFolderName.isNotBlank()) {
+                        viewModel.renameFolder(folderToRename!!, newFolderName.trim())
+                        folderToRename = null; newFolderName = ""
                     }
-                ) { Text("Переименовать") }
+                }) { Text("Переименовать") }
             },
-            dismissButton = { 
-                TextButton(onClick = { 
-                    folderToRename = null
-                    newFolderName = ""
-                }) { Text("Отмена") } 
-            }
+            dismissButton = { TextButton(onClick = { folderToRename = null; newFolderName = "" }) { Text("Отмена") } }
         )
     }
 
-    // === Диалог редактирования точки ===
     if (locationToEdit != null) {
         var editName by remember(locationToEdit) { mutableStateOf(locationToEdit!!.name) }
         var editDescription by remember(locationToEdit) { mutableStateOf(locationToEdit!!.description) }
@@ -616,70 +665,31 @@ fun VaultScreen(
             title = { Text("Редактировать точку") },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                    OutlinedTextField(
-                        value = editName,
-                        onValueChange = { editName = it; editError = null },
-                        label = { Text("Название") },
-                        singleLine = true,
-                        modifier = Modifier.fillMaxWidth()
-                    )
-                    OutlinedTextField(
-                        value = editDescription,
-                        onValueChange = { editDescription = it },
-                        label = { Text("Описание") },
-                        singleLine = true,
-                        modifier = Modifier.fillMaxWidth()
-                    )
+                    OutlinedTextField(value = editName, onValueChange = { editName = it; editError = null }, label = { Text("Название") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+                    OutlinedTextField(value = editDescription, onValueChange = { editDescription = it }, label = { Text("Описание") }, singleLine = true, modifier = Modifier.fillMaxWidth())
                     Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                        OutlinedTextField(
-                            value = editLat,
-                            onValueChange = { editLat = it; editError = null },
-                            label = { Text("Широта") },
-                            singleLine = true,
-                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
-                            modifier = Modifier.weight(1f)
-                        )
-                        OutlinedTextField(
-                            value = editLon,
-                            onValueChange = { editLon = it; editError = null },
-                            label = { Text("Долгота") },
-                            singleLine = true,
-                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
-                            modifier = Modifier.weight(1f)
-                        )
+                        OutlinedTextField(value = editLat, onValueChange = { editLat = it; editError = null }, label = { Text("Широта") }, singleLine = true, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal), modifier = Modifier.weight(1f))
+                        OutlinedTextField(value = editLon, onValueChange = { editLon = it; editError = null }, label = { Text("Долгота") }, singleLine = true, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal), modifier = Modifier.weight(1f))
                     }
-                    if (editError != null) {
-                        Text(editError!!, color = MaterialTheme.colorScheme.error,
-                            style = MaterialTheme.typography.bodySmall)
-                    }
+                    if (editError != null) Text(editError!!, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
                 }
             },
             confirmButton = {
-                TextButton(
-                    onClick = {
-                        val lat = editLat.replace(',', '.').toDoubleOrNull()
-                        val lon = editLon.replace(',', '.').toDoubleOrNull()
-                        when {
-                            editName.isBlank() -> editError = "Введите название"
-                            lat == null || lon == null -> editError = "Некорректные координаты"
-                            lat !in -90.0..90.0 || lon !in -180.0..180.0 -> editError = "Координаты вне диапазона"
-                            else -> {
-                                val updated = locationToEdit!!.copy(
-                                    name = editName.trim(),
-                                    description = editDescription.trim(),
-                                    latitude = lat,
-                                    longitude = lon
-                                )
-                                viewModel.updateLocation(updated)
-                                locationToEdit = null
-                            }
+                TextButton(onClick = {
+                    val lat = editLat.replace(',', '.').toDoubleOrNull()
+                    val lon = editLon.replace(',', '.').toDoubleOrNull()
+                    when {
+                        editName.isBlank() -> editError = "Введите название"
+                        lat == null || lon == null -> editError = "Некорректные координаты"
+                        lat !in -90.0..90.0 || lon !in -180.0..180.0 -> editError = "Координаты вне диапазона"
+                        else -> {
+                            viewModel.updateLocation(locationToEdit!!.copy(name = editName.trim(), description = editDescription.trim(), latitude = lat, longitude = lon))
+                            locationToEdit = null
                         }
                     }
-                ) { Text("Сохранить") }
+                }) { Text("Сохранить") }
             },
-            dismissButton = { 
-                TextButton(onClick = { locationToEdit = null }) { Text("Отмена") } 
-            }
+            dismissButton = { TextButton(onClick = { locationToEdit = null }) { Text("Отмена") } }
         )
     }
 
@@ -693,48 +703,63 @@ fun VaultScreen(
             title = { Text("Логи приложения") },
             text = {
                 Column {
-                    Text(
-                        "Путь: ${FileLogger.getLogFilePath(context)}",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
+                    Text("Путь: ${FileLogger.getLogFilePath(context)}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     Spacer(Modifier.height(8.dp))
-                    
-                    Column(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(400.dp)
-                            .verticalScroll(scrollState)
-                    ) {
+                    Column(modifier = Modifier.fillMaxWidth().height(400.dp).verticalScroll(scrollState)) {
                         if (crashContent.isNotEmpty() && crashContent != "Крашей не записано") {
-                            Text(
-                                "=== КРАШИ ===\n$crashContent\n",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.error
-                            )
+                            Text("=== КРАШИ ===\n$crashContent\n", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
                         }
-                        Text(
-                            logContent,
-                            style = MaterialTheme.typography.bodySmall
-                        )
+                        Text(logContent, style = MaterialTheme.typography.bodySmall)
                     }
                 }
             },
-            confirmButton = {
-                TextButton(onClick = { showLogsDialog = false }) { Text("Закрыть") }
-            },
+            confirmButton = { TextButton(onClick = { showLogsDialog = false }) { Text("Закрыть") } },
             dismissButton = {
                 TextButton(onClick = {
                     val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
-                    val clip = android.content.ClipData.newPlainText(
-                        "Логи",
-                        "=== КРАШИ ===\n$crashContent\n\n=== ЛОГИ ===\n$logContent"
-                    )
-                    clipboard.setPrimaryClip(clip)
-                    android.widget.Toast.makeText(context, "Логи скопированы", android.widget.Toast.LENGTH_SHORT).show()
+                    clipboard.setPrimaryClip(android.content.ClipData.newPlainText("Логи", "=== КРАШИ ===\n$crashContent\n\n=== ЛОГИ ===\n$logContent"))
+                    Toast.makeText(context, "Логи скопированы", Toast.LENGTH_SHORT).show()
                 }) { Text("Копировать") }
             }
         )
+    }
+}
+
+// ⭐ Нижняя статусная панель для режима выбора
+@Composable
+private fun SelectionStatusPanel(selectedCount: Int, onDeleteClick: () -> Unit) {
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        tonalElevation = 2.dp,
+        shadowElevation = 4.dp,
+        color = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.95f)
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth().navigationBarsPadding().padding(horizontal = 16.dp, vertical = 12.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Icon(Icons.Default.Delete, null, modifier = Modifier.size(20.dp), tint = MaterialTheme.colorScheme.onErrorContainer)
+            Spacer(Modifier.width(12.dp))
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    if (selectedCount == 0) "Ничего не выбрано" else "Выбрано элементов: $selectedCount",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onErrorContainer
+                )
+                Text(
+                    "Нажмите 🗑 для удаления",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onErrorContainer.copy(alpha = 0.7f)
+                )
+            }
+            IconButton(onClick = onDeleteClick, enabled = selectedCount > 0) {
+                Icon(
+                    Icons.Default.Delete, "Удалить выбранное",
+                    tint = if (selectedCount > 0) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onErrorContainer.copy(alpha = 0.38f),
+                    modifier = Modifier.size(28.dp)
+                )
+            }
+        }
     }
 }
 
@@ -749,60 +774,45 @@ private fun MiniFab(icon: ImageVector, label: String, onClick: () -> Unit) {
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun FolderListItem(
     folder: VaultFolder,
     isMoveTarget: Boolean,
+    isSelected: Boolean,
+    selectionMode: Boolean,
     onOpen: () -> Unit,
+    onLongClick: () -> Unit,
+    onCheckboxChange: (Boolean) -> Unit,
     onDelete: () -> Unit,
     onExport: () -> Unit,
     onRename: () -> Unit
 ) {
     Card(
-        onClick = onOpen,
+        modifier = Modifier.combinedClickable(onClick = onOpen, onLongClick = onLongClick),
         colors = CardDefaults.cardColors(
-            containerColor = if (isMoveTarget) MaterialTheme.colorScheme.primaryContainer
-                else MaterialTheme.colorScheme.surface
+            containerColor = when {
+                isSelected -> MaterialTheme.colorScheme.primaryContainer
+                isMoveTarget -> MaterialTheme.colorScheme.secondaryContainer
+                else -> MaterialTheme.colorScheme.surface
+            }
         )
     ) {
         Row(Modifier.fillMaxWidth().padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
+            if (selectionMode) {
+                Checkbox(checked = isSelected, onCheckedChange = onCheckboxChange)
+                Spacer(Modifier.width(4.dp))
+            }
             Icon(Icons.Default.Folder, null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(32.dp).padding(end = 12.dp))
-            Text(folder.name, style = MaterialTheme.typography.bodyLarge, color = MaterialTheme.colorScheme.onSurface,
-                modifier = Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis)
-            if (!isMoveTarget) {
+            Text(folder.name, style = MaterialTheme.typography.bodyLarge, color = MaterialTheme.colorScheme.onSurface, modifier = Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis)
+            if (!isMoveTarget && !selectionMode) {
                 var menuExpanded by remember { mutableStateOf(false) }
                 Box {
-                    IconButton(onClick = { menuExpanded = true }) {
-                        Icon(Icons.Default.MoreVert, "Меню", tint = MaterialTheme.colorScheme.onSurfaceVariant)
-                    }
-                    DropdownMenu(
-                        expanded = menuExpanded,
-                        onDismissRequest = { menuExpanded = false }
-                    ) {
-                        DropdownMenuItem(
-                            text = { Text("Переименовать") },
-                            onClick = {
-                                menuExpanded = false
-                                onRename()
-                            },
-                            leadingIcon = { Icon(Icons.Default.Edit, null) }
-                        )
-                        DropdownMenuItem(
-                            text = { Text("Экспортировать") },
-                            onClick = {
-                                menuExpanded = false
-                                onExport()
-                            },
-                            leadingIcon = { Icon(Icons.Default.Upload, null) }
-                        )
-                        DropdownMenuItem(
-                            text = { Text("Удалить") },
-                            onClick = {
-                                menuExpanded = false
-                                onDelete()
-                            },
-                            leadingIcon = { Icon(Icons.Default.Delete, null, tint = MaterialTheme.colorScheme.error) }
-                        )
+                    IconButton(onClick = { menuExpanded = true }) { Icon(Icons.Default.MoreVert, "Меню", tint = MaterialTheme.colorScheme.onSurfaceVariant) }
+                    DropdownMenu(expanded = menuExpanded, onDismissRequest = { menuExpanded = false }) {
+                        DropdownMenuItem(text = { Text("Переименовать") }, onClick = { menuExpanded = false; onRename() }, leadingIcon = { Icon(Icons.Default.Edit, null) })
+                        DropdownMenuItem(text = { Text("Экспортировать") }, onClick = { menuExpanded = false; onExport() }, leadingIcon = { Icon(Icons.Default.Upload, null) })
+                        DropdownMenuItem(text = { Text("Удалить") }, onClick = { menuExpanded = false; onDelete() }, leadingIcon = { Icon(Icons.Default.Delete, null, tint = MaterialTheme.colorScheme.error) })
                     }
                 }
             }
@@ -810,64 +820,50 @@ private fun FolderListItem(
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun LocationListItem(
     location: SavedLocation,
     isSelectedForMove: Boolean,
     moveMode: Boolean,
+    isSelected: Boolean,
+    selectionMode: Boolean,
     onOpenMap: () -> Unit,
+    onLongClick: () -> Unit,
+    onCheckboxChange: (Boolean) -> Unit,
     onMove: () -> Unit,
     onDelete: () -> Unit,
     onEdit: () -> Unit
 ) {
     Card(
-        onClick = onOpenMap,
+        modifier = Modifier.combinedClickable(onClick = onOpenMap, onLongClick = onLongClick),
         colors = CardDefaults.cardColors(
-            containerColor = if (isSelectedForMove) MaterialTheme.colorScheme.primaryContainer
-                else MaterialTheme.colorScheme.surface
+            containerColor = when {
+                isSelected -> MaterialTheme.colorScheme.primaryContainer
+                isSelectedForMove -> MaterialTheme.colorScheme.secondaryContainer
+                else -> MaterialTheme.colorScheme.surface
+            }
         )
     ) {
         Row(Modifier.fillMaxWidth().padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
+            if (selectionMode) {
+                Checkbox(checked = isSelected, onCheckedChange = onCheckboxChange)
+                Spacer(Modifier.width(4.dp))
+            }
             Icon(Icons.Default.Place, null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(32.dp).padding(end = 12.dp))
             Column(Modifier.weight(1f)) {
                 Text(location.name, style = MaterialTheme.typography.bodyLarge, color = MaterialTheme.colorScheme.onSurface, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 Text("%.6f, %.6f".format(location.latitude, location.longitude), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
             if (location.photoId != null) Icon(Icons.Default.Image, "Фото", tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(20.dp).padding(end = 4.dp))
-            if (!moveMode) {
+            if (!moveMode && !selectionMode) {
                 var menuExpanded by remember { mutableStateOf(false) }
                 Box {
-                    IconButton(onClick = { menuExpanded = true }) {
-                        Icon(Icons.Default.MoreVert, "Меню", tint = MaterialTheme.colorScheme.onSurfaceVariant)
-                    }
-                    DropdownMenu(
-                        expanded = menuExpanded,
-                        onDismissRequest = { menuExpanded = false }
-                    ) {
-                        DropdownMenuItem(
-                            text = { Text("Редактировать") },
-                            onClick = {
-                                menuExpanded = false
-                                onEdit()
-                            },
-                            leadingIcon = { Icon(Icons.Default.Edit, null) }
-                        )
-                        DropdownMenuItem(
-                            text = { Text("Переместить") },
-                            onClick = {
-                                menuExpanded = false
-                                onMove()
-                            },
-                            leadingIcon = { Icon(Icons.Default.DriveFileMove, null) }
-                        )
-                        DropdownMenuItem(
-                            text = { Text("Удалить") },
-                            onClick = {
-                                menuExpanded = false
-                                onDelete()
-                            },
-                            leadingIcon = { Icon(Icons.Default.Delete, null, tint = MaterialTheme.colorScheme.error) }
-                        )
+                    IconButton(onClick = { menuExpanded = true }) { Icon(Icons.Default.MoreVert, "Меню", tint = MaterialTheme.colorScheme.onSurfaceVariant) }
+                    DropdownMenu(expanded = menuExpanded, onDismissRequest = { menuExpanded = false }) {
+                        DropdownMenuItem(text = { Text("Редактировать") }, onClick = { menuExpanded = false; onEdit() }, leadingIcon = { Icon(Icons.Default.Edit, null) })
+                        DropdownMenuItem(text = { Text("Переместить") }, onClick = { menuExpanded = false; onMove() }, leadingIcon = { Icon(Icons.Default.DriveFileMove, null) })
+                        DropdownMenuItem(text = { Text("Удалить") }, onClick = { menuExpanded = false; onDelete() }, leadingIcon = { Icon(Icons.Default.Delete, null, tint = MaterialTheme.colorScheme.error) })
                     }
                 }
             }
@@ -875,25 +871,37 @@ private fun LocationListItem(
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun FileListItem(
     file: VaultFile,
     isSelectedForMove: Boolean,
     moveMode: Boolean,
+    isSelected: Boolean,
+    selectionMode: Boolean,
     onPreview: () -> Unit,
+    onLongClick: () -> Unit,
+    onCheckboxChange: (Boolean) -> Unit,
     onExport: () -> Unit,
     onMove: () -> Unit,
     onDelete: () -> Unit,
     onRename: () -> Unit
 ) {
     Card(
-        onClick = onPreview,
+        modifier = Modifier.combinedClickable(onClick = onPreview, onLongClick = onLongClick),
         colors = CardDefaults.cardColors(
-            containerColor = if (isSelectedForMove) MaterialTheme.colorScheme.primaryContainer
-                else MaterialTheme.colorScheme.surface
+            containerColor = when {
+                isSelected -> MaterialTheme.colorScheme.primaryContainer
+                isSelectedForMove -> MaterialTheme.colorScheme.secondaryContainer
+                else -> MaterialTheme.colorScheme.surface
+            }
         )
     ) {
         Row(Modifier.fillMaxWidth().padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
+            if (selectionMode) {
+                Checkbox(checked = isSelected, onCheckedChange = onCheckboxChange)
+                Spacer(Modifier.width(4.dp))
+            }
             val icon = when {
                 file.mimeType.startsWith("image/") -> Icons.Default.Image
                 file.mimeType.startsWith("text/") -> Icons.Default.Description
@@ -905,48 +913,15 @@ private fun FileListItem(
                 Text(file.originalName, style = MaterialTheme.typography.bodyLarge, color = MaterialTheme.colorScheme.onSurface, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 Text(file.mimeType, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
-            if (!moveMode) {
+            if (!moveMode && !selectionMode) {
                 var menuExpanded by remember { mutableStateOf(false) }
                 Box {
-                    IconButton(onClick = { menuExpanded = true }) {
-                        Icon(Icons.Default.MoreVert, "Меню", tint = MaterialTheme.colorScheme.onSurfaceVariant)
-                    }
-                    DropdownMenu(
-                        expanded = menuExpanded,
-                        onDismissRequest = { menuExpanded = false }
-                    ) {
-                        DropdownMenuItem(
-                            text = { Text("Переименовать") },
-                            onClick = {
-                                menuExpanded = false
-                                onRename()
-                            },
-                            leadingIcon = { Icon(Icons.Default.Edit, null) }
-                        )
-                        DropdownMenuItem(
-                            text = { Text("Переместить") },
-                            onClick = {
-                                menuExpanded = false
-                                onMove()
-                            },
-                            leadingIcon = { Icon(Icons.Default.DriveFileMove, null) }
-                        )
-                        DropdownMenuItem(
-                            text = { Text("Экспорт") },
-                            onClick = {
-                                menuExpanded = false
-                                onExport()
-                            },
-                            leadingIcon = { Icon(Icons.Default.Share, null) }
-                        )
-                        DropdownMenuItem(
-                            text = { Text("Удалить") },
-                            onClick = {
-                                menuExpanded = false
-                                onDelete()
-                            },
-                            leadingIcon = { Icon(Icons.Default.Delete, null, tint = MaterialTheme.colorScheme.error) }
-                        )
+                    IconButton(onClick = { menuExpanded = true }) { Icon(Icons.Default.MoreVert, "Меню", tint = MaterialTheme.colorScheme.onSurfaceVariant) }
+                    DropdownMenu(expanded = menuExpanded, onDismissRequest = { menuExpanded = false }) {
+                        DropdownMenuItem(text = { Text("Переименовать") }, onClick = { menuExpanded = false; onRename() }, leadingIcon = { Icon(Icons.Default.Edit, null) })
+                        DropdownMenuItem(text = { Text("Переместить") }, onClick = { menuExpanded = false; onMove() }, leadingIcon = { Icon(Icons.Default.DriveFileMove, null) })
+                        DropdownMenuItem(text = { Text("Экспорт") }, onClick = { menuExpanded = false; onExport() }, leadingIcon = { Icon(Icons.Default.Share, null) })
+                        DropdownMenuItem(text = { Text("Удалить") }, onClick = { menuExpanded = false; onDelete() }, leadingIcon = { Icon(Icons.Default.Delete, null, tint = MaterialTheme.colorScheme.error) })
                     }
                 }
             }

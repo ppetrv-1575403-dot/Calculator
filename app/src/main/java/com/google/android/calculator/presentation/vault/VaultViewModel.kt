@@ -33,6 +33,94 @@ class VaultViewModel(
     var itemToMove by mutableStateOf<VaultItem?>(null); private set
     var isLoading by mutableStateOf(true); private set
 
+    // ⭐ Состояния для режима множественного удаления
+    var selectionMode by mutableStateOf(false); private set
+    var selectedItems by mutableStateOf<Set<VaultItem>>(emptySet()); private set
+
+    fun startSelection(item: VaultItem) {
+        selectionMode = true
+        selectedItems = setOf(item)
+    }
+
+    fun toggleSelection(item: VaultItem) {
+        selectedItems = if (selectedItems.contains(item)) {
+            val newSet = selectedItems - item
+            if (newSet.isEmpty()) {
+                selectionMode = false
+            }
+            newSet
+        } else {
+            selectedItems + item
+        }
+    }
+
+    fun cancelSelection() {
+        selectionMode = false
+        selectedItems = emptySet()
+    }
+
+    fun selectAll() {
+        selectedItems = items.toSet()
+    }
+
+    fun deleteSelected() {
+        if (selectedItems.isEmpty()) return
+        
+        viewModelScope.launch {
+            try {
+                withContext(Dispatchers.IO) {
+                    selectedItems.forEach { item ->
+                        when (item) {
+                            is VaultItem.FileItem -> {
+                                appContainer.vaultRepository.deleteFile(item.file.id)
+                            }
+                            is VaultItem.LocationItem -> {
+                                appContainer.locationRepository.deleteLocation(item.location.id)
+                            }
+                            is VaultItem.FolderItem -> {
+                                // Рекурсивное удаление папки со всем содержимым
+                                val allFolders = appContainer.folderRepository.getFolders()
+                                val foldersToDeleteIds = mutableListOf<String>()
+                                foldersToDeleteIds.add(item.folder.id)
+                                
+                                fun collectSubfolders(parentId: String) {
+                                    val children = allFolders.filter { it.parentId == parentId }
+                                    children.forEach { child ->
+                                        foldersToDeleteIds.add(child.id)
+                                        collectSubfolders(child.id)
+                                    }
+                                }
+                                collectSubfolders(item.folder.id)
+
+                                val allFiles = appContainer.getFilesUseCase()
+                                val filesToDelete = allFiles.filter { it.folderId in foldersToDeleteIds }
+                                filesToDelete.forEach { file ->
+                                    appContainer.vaultRepository.deleteFile(file.id)
+                                }
+
+                                val allLocations = appContainer.locationRepository.getLocations()
+                                val locationsToDelete = allLocations.filter { it.folderId in foldersToDeleteIds }
+                                locationsToDelete.forEach { location ->
+                                    appContainer.locationRepository.deleteLocation(location.id)
+                                }
+
+                                foldersToDeleteIds.forEach { folderId ->
+                                    appContainer.folderRepository.deleteFolder(folderId)
+                                }
+                            }
+                        }
+                    }
+                }
+                
+                selectionMode = false
+                selectedItems = emptySet()
+                loadItems()
+            } catch (e: Exception) {
+                FileLogger.e("VaultViewModel", "Error in deleteSelected", e)
+            }
+        }
+    }
+    
     private val folderStack = ArrayDeque<VaultFolder?>()
 
     init {
