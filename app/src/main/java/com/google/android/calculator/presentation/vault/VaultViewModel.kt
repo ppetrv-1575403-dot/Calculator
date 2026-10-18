@@ -11,7 +11,6 @@ import com.google.android.calculator.domain.model.VaultFile
 import com.google.android.calculator.domain.model.VaultFolder
 import com.google.android.calculator.domain.usecase.AddFileUseCase
 import com.google.android.calculator.domain.usecase.GetFilesUseCase
-import com.google.android.calculator.domain.repository.VaultRepository
 import com.google.android.calculator.utils.FileLogger
 import com.google.android.calculator.utils.VaultManager
 import kotlinx.coroutines.Dispatchers
@@ -25,9 +24,6 @@ sealed class VaultItem {
 }
 
 class VaultViewModel(
-    private val addFileUseCase: AddFileUseCase,
-    private val getFilesUseCase: GetFilesUseCase,
-    private val repository: VaultRepository,
     private val appContainer: AppContainer
 ) : ViewModel() {
 
@@ -93,6 +89,25 @@ class VaultViewModel(
 
     fun refresh() { loadItems() }
 
+    fun forceRefresh() {
+        FileLogger.i("VaultViewModel", "Force refresh triggered")
+        val slotId = VaultManager.currentSlotId
+        
+        // ⭐ Полностью сбрасываем состояние
+        viewModelScope.launch {
+            // Сбрасываем навигацию
+            folderStack.clear()
+            currentFolder = null
+            appContainer.setLastVisitedFolderId(slotId, null)
+            
+            // Инвалидируем кэш
+            appContainer.invalidateCacheForSlot(slotId)
+            
+            // Перезагружаем список
+            loadItems()
+        }
+    }
+    
     private fun loadItems() {
         val container = appContainer.getActiveContainer()
         if (container != null && container.isLocked()) {
@@ -107,13 +122,14 @@ class VaultViewModel(
                 val fid = currentFolder?.id
                 
                 val result = withContext(Dispatchers.IO) {
+                    // ⭐ Всегда получаем актуальный репозиторий через appContainer
                     val folders = appContainer.folderRepository.getFolders()
                         .filter { it.parentId == fid }
                         .map { VaultItem.FolderItem(it) }
                     val locations = appContainer.locationRepository.getLocations()
                         .filter { it.folderId == fid }
                         .map { VaultItem.LocationItem(it) }
-                    val files = getFilesUseCase()
+                    val files = appContainer.getFilesUseCase()
                         .filter { it.folderId == fid }
                         .map { VaultItem.FileItem(it) }
                     folders + locations + files
@@ -152,6 +168,15 @@ class VaultViewModel(
         currentFolder = null
         saveCurrentFolder()
         loadItems()
+    }
+
+    fun resetNavigation() {
+        FileLogger.i("VaultViewModel", "Resetting navigation stack")
+        folderStack.clear()
+        currentFolder = null
+        items = emptyList()
+        val slotId = VaultManager.currentSlotId
+        appContainer.setLastVisitedFolderId(slotId, null)
     }
 
     fun createFolder(name: String) {
@@ -200,14 +225,14 @@ class VaultViewModel(
                     }
                     collectSubfolders(folder.id)
 
-                    val allFiles = getFilesUseCase()
+                    val allFiles = appContainer.getFilesUseCase()
                     val filesToDelete = allFiles.filter { it.folderId in foldersToDeleteIds }
 
                     val allLocations = appContainer.locationRepository.getLocations()
                     val locationsToDelete = allLocations.filter { it.folderId in foldersToDeleteIds }
 
                     filesToDelete.forEach { file ->
-                        repository.deleteFile(file.id)
+                        appContainer.vaultRepository.deleteFile(file.id)
                     }
 
                     locationsToDelete.forEach { location ->
@@ -240,7 +265,7 @@ class VaultViewModel(
         viewModelScope.launch {
             try {
                 withContext(Dispatchers.IO) {
-                    repository.deleteFile(file.id)
+                    appContainer.vaultRepository.deleteFile(file.id)
                 }
                 loadItems()
             } catch (e: Exception) {
@@ -255,7 +280,7 @@ class VaultViewModel(
         viewModelScope.launch {
             try {
                 withContext(Dispatchers.IO) {
-                    repository.renameFile(file.id, newName.trim())
+                    appContainer.vaultRepository.renameFile(file.id, newName.trim())
                 }
                 loadItems()
             } catch (e: Exception) {
@@ -315,7 +340,7 @@ class VaultViewModel(
                 withContext(Dispatchers.IO) {
                     when (item) {
                         is VaultItem.FileItem -> {
-                            repository.moveFileToFolder(item.file.id, folder?.id)
+                            appContainer.vaultRepository.moveFileToFolder(item.file.id, folder?.id)
                         }
                         is VaultItem.LocationItem -> {
                             appContainer.locationRepository.moveLocationToFolder(item.location.id, folder?.id)
@@ -344,7 +369,7 @@ class VaultViewModel(
                 withContext(Dispatchers.IO) {
                     when (item) {
                         is VaultItem.FileItem -> {
-                            repository.moveFileToFolder(item.file.id, parentId)
+                            appContainer.vaultRepository.moveFileToFolder(item.file.id, parentId)
                         }
                         is VaultItem.LocationItem -> {
                             appContainer.locationRepository.moveLocationToFolder(item.location.id, parentId)

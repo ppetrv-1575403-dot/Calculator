@@ -5,6 +5,7 @@ import android.graphics.BitmapFactory
 import android.net.Uri
 import androidx.activity.compose.BackHandler
 import android.content.Context
+import java.io.File
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -104,14 +105,12 @@ fun PreviewScreen(
             val files = if (targetFile != null) {
                 val realFolderId = targetFile.folderId
                 FileLogger.d("PreviewScreen", "Found file $fileId in folder $realFolderId (passed folderId was $folderId)")
-                allVaultFiles
-                    .filter { it.folderId == realFolderId }
-                    .sortedBy { it.originalName.lowercase() }
+                // ⭐ Убрана сортировка — используем порядок из репозитория (как в VaultScreen)
+                allVaultFiles.filter { it.folderId == realFolderId }
             } else {
                 FileLogger.w("PreviewScreen", "File $fileId not found, using passed folderId=$folderId")
-                allVaultFiles
-                    .filter { it.folderId == folderId }
-                    .sortedBy { it.originalName.lowercase() }
+                // ⭐ Убрана сортировка — используем порядок из репозитория
+                allVaultFiles.filter { it.folderId == folderId }
             }
             
             allFiles = files
@@ -228,6 +227,7 @@ private fun FilePlayerView(
             file.mimeType.startsWith("video/") || file.mimeType.startsWith("audio/") -> {
                 val container = appContainer.getActiveContainer()
                 if (container != null) {
+                    // ⭐ Контейнер доступен — используем потоковое воспроизведение
                     VideoPlayerView(
                         fileId = file.id,
                         fileName = file.originalName,
@@ -238,7 +238,14 @@ private fun FilePlayerView(
                         onPrevious = onPrevious
                     )
                 } else {
-                    Text("Контейнер не доступен", color = Color.White, modifier = Modifier.align(Alignment.Center))
+                    // ⭐ Контейнер недоступен — расшифровываем во временный файл
+                    LegacyVideoPlayerView(
+                        file = file,
+                        appContainer = appContainer,
+                        onBack = onBack,
+                        onNext = onNext,
+                        onPrevious = onPrevious
+                    )
                 }
             }
             imageBytes != null && file.mimeType.startsWith("image/") -> {
@@ -395,6 +402,145 @@ private fun VideoPlayerView(
                     modifier = Modifier.align(Alignment.BottomCenter)
                 )
             }
+        }
+    }
+}
+
+@Composable
+private fun LegacyVideoPlayerView(
+    file: VaultFile,
+    appContainer: AppContainer,
+    onBack: () -> Unit,
+    onNext: () -> Unit,
+    onPrevious: () -> Unit
+) {
+    val context = LocalContext.current
+    var isPlaying by remember { mutableStateOf(false) }
+    var showControls by remember { mutableStateOf(true) }
+    var currentPosition by remember { mutableStateOf(0L) }
+    var duration by remember { mutableStateOf(0L) }
+    var isFullscreen by remember { mutableStateOf(false) }
+    var tempFile by remember { mutableStateOf<File?>(null) }
+    var isLoading by remember { mutableStateOf(true) }
+    
+    // ⭐ Расшифровываем файл во временный файл
+    LaunchedEffect(file.id) {
+        isLoading = true
+        try {
+            val decrypted = withContext(Dispatchers.IO) {
+                appContainer.vaultRepository.decryptToTempFile(file.encryptedFileName)
+            }
+            tempFile = decrypted
+        } catch (e: Exception) {
+            FileLogger.e("LegacyVideoPlayerView", "Failed to decrypt video", e)
+        } finally {
+            isLoading = false
+        }
+    }
+    
+    val exoPlayer = remember(tempFile) {
+        if (tempFile == null) null
+        else ExoPlayer.Builder(context).build().apply {
+            playWhenReady = true
+            addListener(object : Player.Listener {
+                override fun onIsPlayingChanged(playing: Boolean) { isPlaying = playing }
+                override fun onPlaybackStateChanged(playbackState: Int) {
+                    if (playbackState == Player.STATE_READY) {
+                        duration = this@apply.duration
+                    }
+                }
+            })
+        }
+    }
+    
+    LaunchedEffect(tempFile, exoPlayer) {
+        if (tempFile != null && exoPlayer != null) {
+            val uri = Uri.fromFile(tempFile)
+            val mediaItem = MediaItem.Builder()
+                .setUri(uri)
+                .setMimeType(file.mimeType)
+                .build()
+            exoPlayer.setMediaItem(mediaItem)
+            exoPlayer.prepare()
+        }
+    }
+    
+    LaunchedEffect(exoPlayer) {
+        if (exoPlayer != null) {
+            while (true) {
+                currentPosition = exoPlayer.currentPosition
+                val dur = exoPlayer.duration
+                if (dur > 0 && dur != C.TIME_UNSET) {
+                    duration = dur
+                }
+                delay(500)
+            }
+        }
+    }
+    
+    DisposableEffect(Unit) {
+        onDispose {
+            hideSystemWindowControls(context, false)
+            exoPlayer?.release()
+            tempFile?.delete()  // ⭐ Удаляем временный файл
+        }
+    }
+    
+    LaunchedEffect(isFullscreen) {
+        hideSystemWindowControls(context, isFullscreen)
+    }
+
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Color.Black)
+            .pointerInput(Unit) {
+                detectTapGestures(
+                    onTap = { showControls = !showControls },
+                    onDoubleTap = { if (isPlaying) exoPlayer?.pause() else exoPlayer?.play() }
+                )
+            }
+    ) {
+        if (isLoading) {
+            CircularProgressIndicator(modifier = Modifier.align(Alignment.Center), color = Color.White)
+        } else if (exoPlayer != null) {
+            AndroidView(
+                factory = { ctx ->
+                    PlayerView(ctx).apply {
+                        player = exoPlayer
+                        useController = false
+                        resizeMode = androidx.media3.ui.AspectRatioFrameLayout.RESIZE_MODE_FIT
+                    }
+                },
+                modifier = Modifier.fillMaxSize()
+            )
+            
+            AnimatedVisibility(visible = showControls, enter = fadeIn(), exit = fadeOut(), modifier = Modifier.fillMaxSize()) {
+                Box(modifier = Modifier.fillMaxSize()) {
+                    TopBar(fileName = file.originalName, onBack = onBack, modifier = Modifier.align(Alignment.TopCenter))
+                    CenterControls(
+                        isPlaying = isPlaying,
+                        onPlayPause = { if (isPlaying) exoPlayer?.pause() else exoPlayer?.play() },
+                        onPrevious = { exoPlayer?.seekTo(0); onPrevious() },
+                        onNext = { onNext() },
+                        modifier = Modifier.align(Alignment.Center)
+                    )
+                    BottomControls(
+                        currentPosition = currentPosition,
+                        duration = duration,
+                        onSeek = { position -> exoPlayer?.seekTo(position); currentPosition = position },
+                        isFullscreen = isFullscreen,
+                        onFullscreenToggle = { isFullscreen = !isFullscreen },
+                        modifier = Modifier.align(Alignment.BottomCenter)
+                    )
+                }
+            }
+        } else {
+            Text(
+                "Ошибка загрузки видео",
+                color = Color.White,
+                modifier = Modifier.align(Alignment.Center)
+            )
         }
     }
 }

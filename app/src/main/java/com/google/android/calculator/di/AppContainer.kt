@@ -157,15 +157,15 @@ class AppContainer(context: Context) {
      */
     fun invalidateCacheForSlot(slotId: String) {
         synchronized(cacheLock) {
-            // ⭐ НЕ удаляем VaultContainer, а только сбрасываем sessionKey
-            containerCache[slotId]?.clearSessionKey()
-            
-            // Удаляем репозитории (они будут пересозданы при следующем обращении)
+            // ⭐ Полностью удаляем контейнер из кэша
+            containerCache.remove(slotId)
+
+            // Удаляем все репозитории
             vaultRepoCache.remove(slotId)
             locationRepoCache.remove(slotId)
             folderRepoCache.remove(slotId)
         }
-        FileLogger.i("AppContainer", "Cache invalidated for slot: $slotId (session key cleared)")
+        FileLogger.i("AppContainer", "Cache completely invalidated for slot: $slotId")
     }
 
     val addFileUseCase get() = AddFileUseCase(vaultRepository)

@@ -64,7 +64,7 @@ fun VaultScreen(
 ) {
     val context = LocalContext.current
     val viewModel = remember {
-        VaultViewModel(appContainer.addFileUseCase, appContainer.getFilesUseCase, appContainer.vaultRepository, appContainer)
+        VaultViewModel(appContainer)
     }
     val scope = rememberCoroutineScope()
     var fabExpanded by remember { mutableStateOf(false) }
@@ -82,11 +82,31 @@ fun VaultScreen(
         mutableStateOf(PermissionUtils.hasManageExternalStorage()) 
     }
     
+    val currentSlotId = VaultManager.currentSlotId
+    var lastContainerEnabled by remember { mutableStateOf(VaultManager.containerEnabled(currentSlotId)) }
+    
     val lifecycleOwner = LocalLifecycleOwner.current
     DisposableEffect(lifecycleOwner) {
         val observer = LifecycleEventObserver { _, event ->
             if (event == Lifecycle.Event.ON_RESUME) {
                 hasStoragePermission = PermissionUtils.hasManageExternalStorage()
+                
+                val currentContainerEnabled = VaultManager.containerEnabled(currentSlotId)
+                FileLogger.d("VaultScreen", "ON_RESUME: containerEnabled=$currentContainerEnabled, lastContainerEnabled=$lastContainerEnabled")
+                
+                if (currentContainerEnabled != lastContainerEnabled) {
+                    FileLogger.i("VaultScreen", "Container state changed from $lastContainerEnabled to $currentContainerEnabled")
+                    lastContainerEnabled = currentContainerEnabled
+                    
+                    // ⭐ Полностью сбрасываем кэш
+                    appContainer.invalidateCacheForSlot(currentSlotId)
+                    
+                    // ⭐ Сбрасываем навигацию (новая структура данных)
+                    viewModel.resetNavigation()
+                    
+                    // ⭐ Принудительно перезагружаем
+                    viewModel.refresh()
+                }
             }
         }
         lifecycleOwner.lifecycle.addObserver(observer)
@@ -115,7 +135,6 @@ fun VaultScreen(
     
     LaunchedEffect(Unit) { appContainer.vaultRefresh.collect { viewModel.refresh() } }
 
-    val currentSlotId = VaultManager.currentSlotId
     val isContainerEnabled = remember { VaultManager.containerEnabled(currentSlotId) }
     val isContainerValid = remember(isContainerEnabled, currentSlotId) {
         if (isContainerEnabled) VaultManager.isContainerValid(currentSlotId) else true
