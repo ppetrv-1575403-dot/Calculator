@@ -222,7 +222,7 @@ fun MapLibreMapScreen(
                 )
             )
 
-            if (routePoints.isNotEmpty()) routeSource.setGeoJson(pointsToLineString(routePoints))
+            if (routePoints.isNotEmpty()) routeSource.setGeoJson(pointsToLineString(simplifyRoute(routePoints)))
             if (connectionStartPoints.isNotEmpty()) connectionStartSource.setGeoJson(pointsToLineString(connectionStartPoints))
             if (connectionEndPoints.isNotEmpty()) connectionEndSource.setGeoJson(pointsToLineString(connectionEndPoints))
 
@@ -265,7 +265,6 @@ fun MapLibreMapScreen(
         }
     }
 
-    // === ⭐ Цикл роутинга с живой проверкой графа ===
     LaunchedEffect(target, transportMode, routeRegenCounter) {
         val t = target ?: return@LaunchedEffect
         FileLogger.i("Route", "Routing loop started for target: ${t.name}, transport=$transportMode")
@@ -273,7 +272,6 @@ fun MapLibreMapScreen(
         val region = OfflineRegions.findRegionForPoint(t.latitude, t.longitude)
             ?: currentLocationRef.get()?.let { OfflineRegions.findRegionForPoint(it.latitude, it.longitude) }
 
-        // Начальная попытка загрузки графа (один раз)
         if (region != null && OfflineRouter.isGraphDownloaded(context, region.id)) {
             val loadError = withContext(Dispatchers.IO) { OfflineRouter.loadGraph(context, region.id) }
             if (loadError != null) {
@@ -296,7 +294,6 @@ fun MapLibreMapScreen(
                 val cur = currentLocationRef.get()
                 val currentTransport = transportMode
 
-                // ⭐ Живая проверка графа: если появился новый граф — загрузим его
                 val useOffline = if (region != null && !graphLoadFailed) {
                     if (!isOfflineRouting && OfflineRouter.isGraphDownloaded(context, region.id)) {
                         val loadError = withContext(Dispatchers.IO) { OfflineRouter.loadGraph(context, region.id) }
@@ -457,16 +454,13 @@ fun MapLibreMapScreen(
         }
     }
 
-    LaunchedEffect(routePoints, connectionStartPoints, connectionEndPoints, routeMode, transportMode, routeVersion, routeRegenCounter) {
+    // === ЭФФЕКТ 1: Основной маршрут — перерисовывается только при изменении самого маршрута ===
+    LaunchedEffect(routePoints, routeMode, transportMode, routeVersion, routeRegenCounter) {
         try {
             val map = mapRef
             val style = map?.style
-            if (map == null || style == null) {
-                FileLogger.w("Route", "⚠️ Map or Style is NULL, skipping")
-                return@LaunchedEffect
-            }
+            if (map == null || style == null) return@LaunchedEffect
             if (style.getSource("route_source") == null) {
-                FileLogger.w("Route", "⚠️ Sources missing! Re-adding...")
                 setupMapStyle(style, "recovery")
                 return@LaunchedEffect
             }
@@ -479,7 +473,10 @@ fun MapLibreMapScreen(
 
             val routeSource = style.getSourceAs<GeoJsonSource>("route_source")
             if (routePoints.isNotEmpty()) {
-                routeSource?.setGeoJson(pointsToLineString(routePoints))
+                // ⭐ Применяем прореживание перед отрисовкой
+                val simplified = simplifyRoute(routePoints)
+                routeSource?.setGeoJson(pointsToLineString(simplified))
+                FileLogger.i("Route", "✅ Route APPLIED [$transportMode/$routeColor]: ${routePoints.size} → ${simplified.size} pts")
             } else {
                 routeSource?.setGeoJson("""{"type":"Feature","geometry":{"type":"LineString","coordinates":[]}}""")
             }
@@ -488,17 +485,34 @@ fun MapLibreMapScreen(
             (style.getLayer("route_layer") as? LineLayer)?.setProperties(PropertyFactory.lineColor(routeColor))
             (style.getLayer("connection_start_layer") as? LineLayer)?.setProperties(PropertyFactory.lineColor(routeColor))
 
-            val startSource = style.getSourceAs<GeoJsonSource>("connection_start_source")
-            if (connectionStartPoints.isNotEmpty()) startSource?.setGeoJson(pointsToLineString(connectionStartPoints))
-            else startSource?.setGeoJson("""{"type":"Feature","geometry":{"type":"LineString","coordinates":[]}}""")
-
-            val endSource = style.getSourceAs<GeoJsonSource>("connection_end_source")
-            if (connectionEndPoints.isNotEmpty()) endSource?.setGeoJson(pointsToLineString(connectionEndPoints))
-            else endSource?.setGeoJson("""{"type":"Feature","geometry":{"type":"LineString","coordinates":[]}}""")
-
             map.triggerRepaint()
         } catch (e: Exception) {
-            FileLogger.e("Route", "❌ Update effect failed", e)
+            FileLogger.e("Route", "❌ Main route effect failed", e)
+        }
+    }
+
+    // === ЭФФЕКТ 2: Connection lines — лёгкие, перерисовываются при каждом GPS-фиксе ===
+    LaunchedEffect(connectionStartPoints, connectionEndPoints) {
+        try {
+            val style = mapRef?.style ?: return@LaunchedEffect
+            val startSource = style.getSourceAs<GeoJsonSource>("connection_start_source")
+            val endSource = style.getSourceAs<GeoJsonSource>("connection_end_source")
+
+            if (connectionStartPoints.isNotEmpty()) {
+                startSource?.setGeoJson(pointsToLineString(connectionStartPoints))
+            } else {
+                startSource?.setGeoJson("""{"type":"Feature","geometry":{"type":"LineString","coordinates":[]}}""")
+            }
+
+            if (connectionEndPoints.isNotEmpty()) {
+                endSource?.setGeoJson(pointsToLineString(connectionEndPoints))
+            } else {
+                endSource?.setGeoJson("""{"type":"Feature","geometry":{"type":"LineString","coordinates":[]}}""")
+            }
+
+            mapRef?.triggerRepaint()
+        } catch (e: Exception) {
+            FileLogger.e("Route", "❌ Connection effect failed", e)
         }
     }
 
@@ -591,14 +605,8 @@ fun MapLibreMapScreen(
                 title = { Text(target?.name ?: "Карта", maxLines = 1) },
                 navigationIcon = { IconButton(onClick = onBack) { @Suppress("DEPRECATION") Icon(Icons.Default.ArrowBack, "Назад") } },
                 actions = {
-                    IconButton(onClick = onOpenOfflineMaps) {
-                        Icon(Icons.Default.Map, "Оффлайн-карты")
-                    }
-                    IconButton(onClick = {
-                        target?.let { onEditLocation(it.id) }
-                    }) {
-                        Icon(Icons.Default.Edit, "Редактировать")
-                    }
+                    IconButton(onClick = onOpenOfflineMaps) { Icon(Icons.Default.Map, "Оффлайн-карты") }
+                    IconButton(onClick = { target?.let { onEditLocation(it.id) } }) { Icon(Icons.Default.Edit, "Редактировать") }
                 }
             )
         }
@@ -883,6 +891,19 @@ private fun distanceBetween(lat1: Double, lon1: Double, lat2: Double, lon2: Doub
 private fun pointsToLineString(points: List<Pair<Double, Double>>): String {
     val coords = points.joinToString(",") { "[${it.second},${it.first}]" }
     return """{"type":"Feature","geometry":{"type":"LineString","coordinates":[$coords]}}"""
+}
+
+// === ⭐ Прореживание маршрута: не более 800 точек ===
+private fun simplifyRoute(points: List<Pair<Double, Double>>, maxPoints: Int = 800): List<Pair<Double, Double>> {
+    if (points.size <= maxPoints) return points
+    val result = ArrayList<Pair<Double, Double>>(maxPoints)
+    result.add(points.first())
+    val step = (points.size - 2).toDouble() / (maxPoints - 2)
+    for (i in 1 until maxPoints - 1) {
+        result.add(points[1 + (step * i).toInt()])
+    }
+    result.add(points.last())
+    return result
 }
 
 private fun formatDistance(m: Float): String {
