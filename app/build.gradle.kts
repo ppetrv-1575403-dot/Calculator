@@ -4,11 +4,11 @@ plugins {
 }
 
 android {
-    namespace = "com.google.android.calculator"
+    namespace = "com.google.android.calculator1"
     compileSdk = 34
 
     defaultConfig {
-        applicationId = "com.google.android.calculator"
+        applicationId = "com.google.android.calculator1"
         minSdk = 26
         targetSdk = 34
         versionCode = 37
@@ -65,21 +65,6 @@ android {
             )
         }
     }
-
-    //packagingOptions {
-    //    jniLibs {
-    //        useLegacyPackaging = true   // .so хранятся в APK сжатыми (deflate)
-    //    }
-    //}
-}
-
-dependencies {
-    // ... существующие зависимости ...
-    
-    // ⭐ ExoPlayer (Media3) для видео
-    implementation("androidx.media3:media3-exoplayer:1.4.1")
-    implementation("androidx.media3:media3-ui:1.4.1")
-    implementation("androidx.media3:media3-common:1.4.1")
 }
 
 dependencies {
@@ -125,11 +110,11 @@ dependencies {
     implementation("androidx.exifinterface:exifinterface:1.3.7")
     implementation("com.google.mlkit:text-recognition:16.0.1")
 
-    // ⭐ ExoPlayer (Media3) для видео
+    // ExoPlayer (Media3) для видео
     implementation("androidx.media3:media3-exoplayer:1.4.1")
     implementation("androidx.media3:media3-ui:1.4.1")
     implementation("androidx.media3:media3-common:1.4.1")
 
-    // ⭐ Библиотека для качественного зума изображений в Compose
+    // Библиотека для качественного зума изображений в Compose
     implementation("net.engawapg.lib:zoomable:1.6.1")
 }
