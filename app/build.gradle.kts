@@ -11,8 +11,8 @@ android {
         applicationId = "com.google.android.calculator"
         minSdk = 26
         targetSdk = 34
-        versionCode = 37
-        versionName = "9.2 (941607204)"
+        versionCode = 38
+        versionName = "9.3 (967717812)"
         ndk {
             abiFilters += listOf("arm64-v8a", "armeabi-v7a")
         }
